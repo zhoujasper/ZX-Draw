@@ -2017,19 +2017,19 @@ function exportTex(root) {
   let scope = 'all';
   const ta = $('#expText');
   const gen = () => {
-    const wrap = $('#expWrap').checked;
+    const wrap = wrapEl.checked;
     ta.value = doc.diagrams.length ? ZX.docTex(doc, { wrap, only: scope === 'one' ? activeDi : null, perLine: perLine === 'c' ? null : perLine || null, starts: perLine === 'c' ? lineStarts() : null }) : '% empty';
-    const per = $('#expPer'); if (per) per.classList.toggle('dim', !wrap || scope === 'one');
+    if (perEl) perEl.classList.toggle('dim', !wrap || scope === 'one');
   };
-  const per = $('#expPer');
+  const wrapEl = root.querySelector('#expWrap'), perEl = root.querySelector('#expPer'), scopeEl = root.querySelector('#expScope'), per = perEl;
   if (per) per.addEventListener('click', (e) => {
     const b = e.target.closest('button'); if (!b) return;
     perLine = b.dataset.v === 'c' ? 'c' : +b.dataset.v; try { localStorage.setItem('zx-draw-perline', perLine); } catch (_) {}
     per.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); syncPill(per); gen();
   });
   gen();
-  $('#expWrap').addEventListener('change', gen);
-  if (hasActive) $('#expScope').addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; scope = b.dataset.v; $('#expScope').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); syncPill($('#expScope')); gen(); });
+  wrapEl.addEventListener('change', gen);
+  if (hasActive) scopeEl.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; scope = b.dataset.v; scopeEl.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); syncPill(scopeEl); gen(); });
   $('#expCopy').addEventListener('click', async () => {
     const btn = $('#expCopy');
     try { await navigator.clipboard.writeText(ta.value); } catch (_) { ta.select(); document.execCommand('copy'); }
@@ -2056,7 +2056,7 @@ function diagramPicker(id) {
   return `<select class="sel" id="${id}">${live.map((i) => `<option value="${i}"${i === expPick ? ' selected' : ''}>${esc(nameOf(i))}</option>`).join('')}</select>`;
 }
 function bindPicker(root, id, redraw) {
-  const el = root.querySelector('#' + id) || $('#' + id);
+  const el = root.querySelector('#' + id);
   if (!el) return;
   if (el.tagName === 'SELECT') el.addEventListener('change', () => { expPick = +el.value; redraw(); });
   else el.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; expPick = +b.dataset.v; redraw(); });
@@ -2079,8 +2079,8 @@ function exportTikz(root) {
       <button class="btn ghost" id="tkDl">${I.down}<span>${tkState.fmt === 'doc' ? '.tex' : '.tikz'}</span></button>
       <button class="btn primary" id="tkCopy">Copy</button></div>`;
   const ta = $('#tkText'), save = () => { try { localStorage.setItem('zx-draw-tikz', JSON.stringify(tkState)); } catch (_) {} };
-  const sc = $('#tkScope'); if (sc) sc.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; tkState.scope = b.dataset.v; save(); exportTikz(root); });
-  $('#tkFmt').addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; tkState.fmt = b.dataset.v; save(); exportTikz(root); });
+  const sc = root.querySelector('#tkScope'); if (sc) sc.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; tkState.scope = b.dataset.v; save(); exportTikz(root); });
+  root.querySelector('#tkFmt').addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; tkState.fmt = b.dataset.v; save(); exportTikz(root); });
   bindPicker(root, 'tkPick', () => exportTikz(root));
   let name = 'zx-diagram';
   loadMathJax().then(() => {
@@ -2124,8 +2124,8 @@ function exportPyzx(root) {
   }
   const save = () => { try { localStorage.setItem('zx-draw-pyzx', JSON.stringify(pyState)); } catch (_) {} };
   bindPicker(root, 'pyPick', () => exportPyzx(root));
-  $('#pyFmt').addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; pyState.fmt = b.dataset.v; save(); exportPyzx(root); });
-  $('#pyH').addEventListener('change', (e) => { pyState.hEdges = e.target.checked; save(); exportPyzx(root); });
+  root.querySelector('#pyFmt').addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; pyState.fmt = b.dataset.v; save(); exportPyzx(root); });
+  root.querySelector('#pyH').addEventListener('change', (e) => { pyState.hEdges = e.target.checked; save(); exportPyzx(root); });
   $('#pyCopy').addEventListener('click', async () => { const b = $('#pyCopy'); try { await navigator.clipboard.writeText(ta.value); b.textContent = 'Copied ✓'; } catch (_) { ta.select(); document.execCommand('copy'); b.textContent = 'Copied ✓'; } setTimeout(() => { if (b.isConnected) b.textContent = 'Copy'; }, 1400); });
   $('#pyDl').addEventListener('click', () => { if (out) download(ta.value, fileBase(i) + (pyState.fmt === 'py' ? '.py' : '.zxg'), pyState.fmt === 'py' ? 'text/x-python' : 'application/json'); });
   liftOpts(root);
@@ -2150,7 +2150,7 @@ function exportImage(root) {
   root.querySelectorAll('.seg button[data-k]').forEach((b) => b.addEventListener('click', () => {
     const v = b.dataset.v; imgState[b.dataset.k] = b.dataset.k === 'scale' ? +v : v; save(); exportImage(root);
   }));
-  $('#imgWhite').addEventListener('change', (e) => { imgState.white = e.target.checked; save(); exportImage(root); });
+  root.querySelector('#imgWhite').addEventListener('change', (e) => { imgState.white = e.target.checked; save(); exportImage(root); });
   liftOpts(root);
   keepMotion(root);
   const live = doc.diagrams.map((d, i) => i).filter((i) => doc.diagrams[i].nodes.length);
