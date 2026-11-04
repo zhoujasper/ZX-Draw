@@ -1,0 +1,18 @@
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# local tooling
+.claude/
+.netlify/
+node_modules/
+*.log
+
+# personal notes (kept out of the repo)
+agents.md
+AGENTS.md
+project_memory.md
+CLAUDE.md

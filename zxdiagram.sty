@@ -1,0 +1,108 @@
+% zxdiagram.sty -- ZX-diagrams and quantum circuits in the Picturing Quantum Software style
+%   \usepackage{../../zxdiagram}   (path relative to the .tex file)
+%   Thin wrapper around the CTAN package zx-calculus: book colours, non-bold phases, smaller gates.
+%   (Do NOT also load quantikz: it changes every tikz-cd diagram globally and breaks \zx.)
+%
+% ======================== QUICK REFERENCE ================================
+%
+% Everything is a tikz-cd grid inside \zx{ ... }:   & = next column,  \\ = next row
+%
+% 1) Nodes
+%   \zxZ{}  \zxX{}               green / red spider, no phase
+%   \zxZ{\alpha}  \zxX{\pi}      with phase (a long phase like \alpha+\beta becomes a rounded box)
+%   \zxFracZ{\pi}{2}             phase as a small fraction        (\zxFracX{..}{..} for red)
+%   \zxZ-{\alpha}  \zxFracZ-{\pi}{4}   negative phase
+%   \zxH{}                       Hadamard box
+%   \zxN{}                       empty point: a wire starts / ends / passes here
+%   circuits:  \zxGate{H}   \zxCtrl{} (control dot)   \zxNot{} (target (+))   \zxCross{} (swap)
+%
+% 2) Wires (put them after the node they start from)
+%   \rar \lar \dar \uar          straight, one step right / left / down / up
+%   \ar[rr]  \ar[dr]  \ar[ur]    any direction, repeat a letter to go further
+%   \ar[r,o']  \ar[r,o.]         arc above / below (two parallel edges between spiders)
+%   \ar[ru,<']  \ar[rd,<.]       leave a spider going up / down, arrive flat (fan out)
+%   \ar[ru,'>]  \ar[rd,.>]       leave flat, arrive going up / down (fan in)
+%   \ar[rd,s]                    S-shaped wire (crossing / swap)
+%   \ar[d,C]  \ar[d,C-]          cup / cap opening right / left
+%
+% 3) Options
+%   \zx[circuit]{...}            wider spacing for circuits
+%   \zx[row sep=3mm, column sep=4mm]{...}
+%
+% 4) Recipes
+%   scalar        \zx{\zxX{} \rar & \zxZ{\alpha}}
+%   state         \zx{\zxFracZ{\pi}{2} \rar & \zxN{}}
+%   fusion        \zx{ &&& \zxN{} \\
+%                      \zxN{} \rar & \zxZ{\alpha} \ar[r,o'] \ar[r,o.] & \zxZ{\beta} \ar[ru,<'] \ar[rd,<.] & \\
+%                      &&& \zxN{} }
+%   two wires     \zx{\zxN{} \rar & \zxZ{} \rar \ar[dr] & \zxN{} \rar & \zxN{} \\
+%                     \zxN{} \rar & \zxN{} \rar         & \zxX{} \rar & \zxN{} }
+%   CNOT circuit  \zx[circuit]{\zxN{} \ar[rr] & & \zxCtrl{} \dar \ar[rr] & & \zxN{} \\
+%                     \zxN{} \rar & \zxGate{H} \rar & \zxNot{} \rar & \zxGate{H} \rar & \zxN{} }
+%   CZ circuit    use \zxCtrl{} on both wires:  \zxCtrl{} \dar  over  \zxCtrl{}
+% =========================================================================
+
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{zxdiagram}[2026/10/25 ZX-diagram and circuit helpers]
+
+\RequirePackage{tikz}
+\RequirePackage{zx-calculus}
+
+% ---- Picturing Quantum Software colours
+\definecolor{colorZxZ}{RGB}{216,248,216}
+\definecolor{colorZxX}{RGB}{232,165,165}
+\definecolor{colorZxH}{RGB}{255,255,190}
+
+% ---- phases in normal (not bold) math
+\tikzset{/zx/user overlay nodes/.style={
+  zxShort/.append style={font={\fontsize{8}{10}\selectfont\unboldmath}}}}
+
+% ---- readable default size
+% zx-calculus defaults to 1.5mm between cells and 2mm spiders, so a plain \zx{...}
+% (no options, e.g. pasted from ZX Draw) comes out tiny. Plain diagrams now get a normal
+% textbook size. A diagram that sets its own row sep / column sep keeps the package's
+% original spider size, so hand-tuned layouts look exactly as before.
+\renewcommand{\zxDefaultColumnSep}{3.2mm}
+\renewcommand{\zxDefaultRowSep}{2.8mm}
+\renewcommand{\zxDefaultLineWidth}{0.5pt}
+\def\zxSpiderSize{2.6mm}   % empty Z / X spider in a plain \zx{...}
+\def\zxPointPad{1.3mm}     % half the invisible height of a \zxN{} point (see below)
+\tikzset{
+  /zx/defaultEnv/.append style={
+    /tikz/row sep/.append code={\def\zxSpiderSize{2mm}\def\zxPointPad{0mm}},
+    /tikz/column sep/.append code={\def\zxSpiderSize{2mm}\def\zxPointPad{0mm}}},
+  /zx/user overlay nodes/.append style={
+    zxNoPhase/.append style={minimum size=\zxSpiderSize}},
+% \zxN{} is a bare point with no height, so a row made only of \zxN (a swap, a bare
+% wire) collapses onto its neighbour. Give each point an invisible spider-high extent:
+% rows keep a normal height and wires still meet at the exact point.
+  /zx/default style nodes/.append style={
+    zxNone/.append style={append after command={
+      (\tikzlastnode.center) +(0,-\zxPointPad) +(0,\zxPointPad)}}},
+}
+
+% ---- wire-only diagrams (a bare swap, a cup, an identity wire)
+% With no spider to give the columns width, a swap drawn as \zx{\zxN{} \ar[dr,s] & \zxN{} \ar[dl,s] \\ ...}
+% is squeezed into ")(". A diagram whose body has no spider, box or gate gets wider columns.
+\newcommand{\zxWireColumnSep}{12mm}
+\ExplSyntaxOn
+\NewCommandCopy \zxdiagram@NoExt \zxNoExt
+\RenewDocumentCommand \zxNoExt { O{} +m }
+  {
+    \bool_set_false:N \l_tmpa_bool
+    \clist_map_inline:nn { \zxZ, \zxX, \zxH, \zxFracZ, \zxFracX, \zxGate, \zxCtrl, \zxNot, \zxCross, \zxBox, \zxEmptyDiagram }
+      { \tl_if_in:nnT {#2} {##1} { \bool_set_true:N \l_tmpa_bool \clist_map_break: } }
+    \group_begin:
+    \bool_if:NF \l_tmpa_bool { \cs_set:Npn \zxDefaultColumnSep { \zxWireColumnSep } }
+    \zxdiagram@NoExt [#1] {#2}
+    \group_end:
+  }
+\ExplSyntaxOff
+
+% ---- smaller gate boxes and control dots
+\def\zxBoxMinimumWidth{1.45em}
+\def\zxBoxMinimumHeight{1.45em}
+\RenewExpandableDocumentCommand{\zxCtrl}{O{}m}{%
+  \node[zx main node, circle, inner sep=1.6pt, fill=black, #1]{};}
+
+\endinput

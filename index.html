@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>ZX Draw</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <link rel="stylesheet" href="style.css?v=56">
+</head>
+<body>
+  <main id="viewport">
+    <div id="world"></div>
+    <div id="marquee"></div>
+    <div id="hint" hidden>
+      <div class="hint-title">Empty canvas</div>
+      <div>Pick <b>Z</b> / <b>X</b> / <b>H</b> below and click to place · <b>E</b> to draw wires · or <b>Import</b> LaTeX</div>
+    </div>
+  </main>
+
+  <header class="top">
+    <div class="brand">
+      <svg width="22" height="22" viewBox="0 0 24 24"><path d="M6 12h12" stroke="#222" stroke-width="1.4"/><circle cx="6" cy="12" r="4.2" fill="#d8f8d8" stroke="#222"/><circle cx="18" cy="12" r="4.2" fill="#e8a5a5" stroke="#222"/></svg>
+      <span class="name">ZX Draw</span>
+    </div>
+    <div id="tabs" class="tabs"></div>
+    <button class="swt" id="btnSingle" role="switch" aria-checked="false"><span class="swt-lbl">Single graph</span><span class="swt-track"><span class="swt-knob"></span></span></button>
+    <div class="top-actions">
+      <button class="ibtn hide-m" id="btnTidy" title="Tidy layout (L)"></button>
+      <button class="ibtn hide-m wbtn" id="btnWrap" title="Line wrapping: diagrams per line"></button>
+      <button class="ibtn hide-m" id="btnHelp" title="Shortcuts (?)"></button>
+      <button class="ibtn" id="btnSimp" title="Simplify the current diagram step by step (R)"><span class="bi"></span></button>
+      <button class="ibtn" id="btnNew" title="Canvas: save, open, import, export"></button>
+      <span class="tsep hide-m"></span>
+      <button class="btn ghost cbtn" id="btnCheck" title="Check every step: ✓ / ≈ / ✗ next to each relation"><span class="bi"></span><span class="lbl">Check</span></button>
+      <button class="btn ghost cbtn" id="btnMat" title="Matrix of the current diagram, and checks of every relation (M)"><span class="bi"></span><span class="lbl">Matrix</span></button>
+      <span class="tsep hide-m"></span>
+      <button class="btn" id="btnImport"><span class="bi"></span><span class="lbl">Import</span></button>
+      <button class="btn primary" id="btnExport"><span class="bi"></span><span class="lbl">Export</span></button>
+    </div>
+  </header>
+
+  <nav id="dock">
+    <span class="dock-grip" title="Drag to move the toolbar (double-click: next edge)"></span>
+    <button class="tool" data-tool="select" title="Select / move (V)"><span class="ti"></span><kbd>V</kbd></button>
+    <button class="tool" data-tool="hand" title="Hand: pan the canvas (G, or hold Space)"><span class="ti"></span><kbd>G</kbd></button>
+    <button class="tool" data-tool="Z" title="Z spider (Z)"><span class="sw lg Z"></span><kbd>Z</kbd></button>
+    <button class="tool" data-tool="X" title="X spider (X)"><span class="sw lg X"></span><kbd>X</kbd></button>
+    <button class="tool" data-tool="H" title="Hadamard box (H)"><span class="sw lg H"></span><kbd>H</kbd></button>
+    <button class="tool" data-tool="N" title="Wire point / boundary (N)"><span class="sw lg N"></span><kbd>N</kbd></button>
+    <button class="tool" data-tool="P" title="Dot: routing point for wires (D)"><span class="ti"></span><kbd>D</kbd></button>
+    <button class="tool" data-tool="T" title="Text cell: ⋮, labels (T)"><span class="ti"></span><kbd>T</kbd></button>
+    <button class="tool" data-tool="edge" title="Wire: drag between nodes or cells (E)"><span class="ti"></span><kbd>E</kbd></button>
+    <span class="dock-sep"></span>
+    <button class="tool" id="dUndo" title="Undo (⌘Z)"></button>
+    <button class="tool" id="dRedo" title="Redo (⇧⌘Z)"></button>
+    <button class="tool" id="dDel" title="Delete selection (⌫)"></button>
+  </nav>
+
+  <div id="suggest" hidden>
+    <span class="sg-dot"></span><span class="sg-text">Layout changed — tidy it up?</span>
+    <button class="btn primary sm" id="sgGo">Tidy layout</button>
+    <button class="ib" id="sgX" title="Dismiss">✕</button>
+  </div>
+
+  <div id="minimap" class="empty"><canvas id="mmc" title="Click or drag to move around"></canvas><button id="mmTog" class="mm-tog" title="Hide map"></button></div>
+  <div id="zoombar">
+    <button class="zb zplay" id="btnPlay" title="Present this page as slides (Shift+P)"></button>
+    <button class="zb zlk" id="btnLock" title="Lock this page (K)"></button>
+    <span class="zsep zsep-lk"></span>
+    <button class="zb" id="zOut" title="Zoom out (−)"></button>
+    <button class="zb zp" id="zPct" title="Click: fit diagram → show all → 100%">100%</button>
+    <button class="zb" id="zIn" title="Zoom in (+)"></button>
+    <span class="zsep"></span>
+    <button class="zb" id="zFit" title="Fit to screen (F)"></button>
+    <span class="zsep zsep-pv"></span>
+    <button class="zb zpv" id="btnPreview" title="Preview without editing guides (P)"></button>
+  </div>
+
+  <div id="menu" class="pop menu" hidden></div>
+  <div id="insp" class="pop" hidden></div>
+  <div id="pop" class="pop" hidden></div>
+
+  <div id="modal" class="modal" hidden>
+    <div class="sheet" role="dialog" aria-modal="true">
+      <header><h2 id="mTitle"></h2><button class="ib" data-m="close" title="Close (Esc)">✕</button></header>
+      <div class="mbody" id="mBody"></div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script src="zx-core.js?v=25"></script>
+  <script src="zx-sim.js?v=28"></script>
+  <script src="zx-pyzx.js?v=1"></script>
+  <script src="app.js?v=61"></script>
+</body>
+</html>

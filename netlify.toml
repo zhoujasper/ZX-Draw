@@ -1,0 +1,10 @@
+# Static site: no build step, publish the repository root.
+[build]
+  publish = "."
+  command = ""
+
+# Scripts and styles carry ?v= version tags, so they can be cached; the page itself is always revalidated.
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache"
