@@ -880,3 +880,7 @@ input[type="checkbox"]:not(.switch input):disabled { opacity: .4; cursor: defaul
 .show-dot.on { width: 20px; background: var(--ink); }
 .show-count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 36px; text-align: center; }
 @media (max-width: 820px) { #zoombar .zplay { display: grid !important; width: 36px; height: 36px; border-radius: 11px; background: #fff; box-shadow: var(--shadow); margin-right: 6px; } .show-rel { font-size: 24px; } }
+
+/* export format tabs in the title row */
+.sheet header .hdr-tabs { margin: 0 auto 0 16px; animation: optsIn .3s cubic-bezier(.22,1,.36,1); }
+@media (max-width: 640px) { .sheet header .hdr-tabs { margin-left: 10px; } .sheet header .hdr-tabs button { padding: 0 9px; } }

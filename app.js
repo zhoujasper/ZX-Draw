@@ -1866,7 +1866,7 @@ function togglePreview() {
 }
 
 // ---------- modals ----------
-function openModal(title, html) { recording = null; $('#modal .sheet').classList.remove('wide'); $('#mTitle').textContent = title; $('#mBody').innerHTML = html; $('#modal').hidden = false; syncAllPills($('#mBody')); closePop(); }
+function openModal(title, html) { recording = null; document.querySelectorAll('#modal header .hdr-tabs').forEach((x) => x.remove()); $('#modal .sheet').classList.remove('wide'); $('#mTitle').textContent = title; $('#mBody').innerHTML = html; $('#modal').hidden = false; syncAllPills($('#mBody')); closePop(); }
 function closeModal() { $('#modal').hidden = true; }
 $('#modal').addEventListener('pointerdown', (e) => { if (e.target.id === 'modal') closeModal(); });
 $('#modal').addEventListener('click', (e) => { if (e.target.closest('[data-m="close"]')) closeModal(); });
@@ -1947,9 +1947,13 @@ let expTab = 'tex', imgState = { scope: 'one', fmt: 'png', scale: 3, white: true
 try { Object.assign(imgState, JSON.parse(localStorage.getItem('zx-draw-img') || '{}')); } catch (_) {}
 function openExport(tab) {
   expTab = ['img', 'tikz', 'pyzx'].includes(tab) ? tab : 'tex';   // opens on LaTeX unless asked for another tab
-  openModal('Export', `<div class="exphead"><div class="seg htabs" data-seg="exptab"><button data-et="tex">LaTeX</button><button data-et="img">Image</button><button data-et="tikz">TikZ</button><button data-et="pyzx">PyZX</button></div><span class="exp-sep"></span><div id="expOpts"></div></div><div id="expBody" class="hbody"></div>`);
+  openModal('Export', `<div class="exphead"><div id="expOpts"></div></div><div id="expBody" class="hbody"></div>`);
   $('#modal .sheet').classList.add('wide');
-  const tabs = $('#modal .htabs');
+  // the format tabs sit in the title row, right of "Export"
+  const head = $('#modal header');
+  head.insertAdjacentHTML('beforeend', `<div class="seg htabs hdr-tabs" data-seg="exptab"><button data-et="tex">LaTeX</button><button data-et="img">Image</button><button data-et="tikz">TikZ</button><button data-et="pyzx">PyZX</button></div>`);
+  const tabs = head.querySelector('.hdr-tabs');
+  head.insertBefore(tabs, head.querySelector('[data-m="close"]'));
   const show = () => {
     tabs.querySelectorAll('[data-et]').forEach((b) => b.classList.toggle('on', b.dataset.et === expTab));
     syncPill(tabs);
