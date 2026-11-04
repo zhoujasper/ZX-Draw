@@ -833,7 +833,7 @@ input[type="checkbox"]:not(.switch input):disabled { opacity: .4; cursor: defaul
 @keyframes fanDash { to { stroke-dashoffset: -8; } }
 
 .warnline { color: #a85f14; }
-.sel { height: 30px; border-radius: 8px; border: 1px solid var(--line); background: #fff; font: inherit; font-size: 13px; padding: 0 8px; }
+select.sel { height: 30px; border-radius: 8px; border: 1px solid var(--line); background: #fff; font: inherit; font-size: 13px; padding: 0 8px; }
 
 /* TikZ tab: code and the image it draws, side by side */
 .tkwrap { display: grid; grid-template-columns: 1fr minmax(180px, 38%); gap: 10px; }
@@ -898,3 +898,109 @@ input[type="checkbox"]:not(.switch input):disabled { opacity: .4; cursor: defaul
 .show-stage.swap { animation: showSwap .38s ease; }
 @keyframes showSwap { from { opacity: 0; } }
 @media (max-width: 640px) { .show-prel { font-size: 24px; } }
+.mini-empty { position: absolute; border: 1.5px dashed #c9c9c4; border-radius: 4px; box-sizing: border-box; }
+
+/* ---- matrix arrow: bold wire + chevron on the canvas ---- */
+.node.tM { width: 60px; height: 30px; border: 0; background: transparent; border-radius: 9px; overflow: visible; }
+.node.tM::after { inset: -6px -4px; border-radius: 10px; }
+.node.tM .marr { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.m-bar { stroke: #1f1f1f; stroke-width: 3.4; fill: none; }
+.m-chev { fill: #b3b3bb; stroke: #1f1f1f; stroke-width: 1.3; stroke-linejoin: miter; transition: fill .2s; }
+.node.tM:hover .m-chev { fill: #c9c9e8; }
+.node.tM .ml { position: absolute; transform: translateX(-50%); font-size: 10.5px; line-height: 1; color: #2a2a2e; pointer-events: none; white-space: nowrap; }
+.node.tM .ml .katex { font-size: 1em; }
+.node.tM .ml-a { left: 50%; bottom: calc(50% + 7px); font-size: 12px; }
+.node.tM .ml-l { left: 24%; bottom: calc(50% + 3.5px); }
+.node.tM .ml-r { left: 76%; bottom: calc(50% + 3.5px); }
+.node.tM.sel { box-shadow: 0 0 0 2px #fff, 0 0 0 3.5px var(--accent); background: rgba(91,91,214,.06); }
+.node.tM.warn .m-chev { fill: #f3c37a; animation: mwarn 1.8s ease-in-out infinite; }
+@keyframes mwarn { 50% { fill: #f8dcae; } }
+.node.tM[data-warn]::before { content: attr(data-warn); position: absolute; left: 50%; top: calc(100% + 6px); transform: translate(-50%, -3px) scale(.92);
+  padding: 3px 7px; border-radius: 6px; font: 600 10.5px/1.35 system-ui, sans-serif; white-space: nowrap; color: #fff; background: #c27a16;
+  opacity: 0; transition: opacity .15s, transform .15s; pointer-events: none; z-index: 3; }
+.node.tM[data-warn]:hover::before { opacity: 1; transform: translate(-50%, 0) scale(1); }
+.tool[data-tool="M"] .ti svg { display: block; }
+
+/* ---- matrix arrow panel ---- */
+#insp.mpanel { width: 330px; }
+.m-head { margin-bottom: 1px; }
+.m-ttl { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13px; padding-left: 4px; color: var(--ink); }
+.m-ttl svg { color: var(--ink); }
+.m-sp { flex: 1; }
+.m-f { flex: 1 1 0; padding: 0 8px; gap: 6px; }
+.m-f input { min-width: 0; font-family: inherit; font-size: 13px; }
+.m-body { display: flex; gap: 12px; align-items: flex-start; }
+.m-gw { position: relative; padding: 4px 9px; flex: none; transition: opacity .2s; }
+.m-gw::before, .m-gw::after { content: ''; position: absolute; top: 2px; bottom: 16px; width: 6px; border: 1.4px solid #8a8a90; }
+.m-gw::before { left: 0; border-right: 0; border-radius: 6px 0 0 6px; }
+.m-gw::after { right: 14px; border-left: 0; border-radius: 0 6px 6px 0; }
+.m-gw.none { display: none; }
+.m-grid { display: grid; grid-auto-rows: 24px; gap: 2px; }
+.mb { border: 0; border-radius: 6px; background: transparent; font: 500 13px/1 var(--mono); color: #b0b0b6; cursor: pointer; padding: 0;
+  transition: background .15s, color .15s, transform .1s; }
+.mb:hover { background: var(--soft); color: var(--ink); }
+.mb.on { color: #8a4b08; background: #fdebd3; box-shadow: inset 0 0 0 1px #efc795; }
+.mb.on:hover { background: #fbdfba; }
+.mb:active { transform: scale(.9); }
+.madd { border: 0; background: transparent; color: #b8b8be; font-size: 12px; line-height: 1; border-radius: 6px; cursor: pointer; padding: 0; opacity: 0; transition: opacity .15s, background .15s; }
+.m-gw:hover .madd { opacity: 1; }
+.madd:hover { background: rgba(91,91,214,.1); color: var(--accent); }
+.madd.mc { margin-left: 4px; }
+.madd.mr { height: 12px; align-self: start; }
+.m-grid { grid-auto-rows: 24px; }
+.m-tw { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.m-text { width: 100%; resize: vertical; min-height: 66px; border: 0; border-radius: 8px; background: var(--soft); padding: 7px 9px; outline: none;
+  font: 13px/1.45 var(--mono); color: var(--ink); transition: box-shadow .15s, background .15s; }
+.m-text:focus { background: #fff; box-shadow: 0 0 0 2px rgba(91,91,214,.35); }
+.m-text.bad, .m-text.bad:focus { box-shadow: 0 0 0 2px rgba(211,51,51,.35); }
+.m-hint { font-size: 10.5px; color: var(--muted); line-height: 1.3; }
+.m-foot { margin-top: 2px; }
+.m-stat { flex: 1; font-size: 12px; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-stat.warn { color: #b06a0c; }
+.m-stat.err { color: #c43a3a; }
+.m-exp { display: inline-flex; align-items: center; gap: 7px; }
+.m-exp kbd { font: 10.5px var(--mono); color: var(--muted); background: var(--soft); border-radius: 4px; padding: 1px 4px; }
+.m-exp:disabled { opacity: .45; cursor: default; box-shadow: none; transform: none; }
+@media (max-width: 640px) {
+  #insp.mpanel { width: auto; }
+  .m-body { flex-direction: column; gap: 8px; }
+  .m-gw { align-self: center; }
+  .madd { opacity: 1; }
+  .m-grid { --mbw: 30px; }
+  .m-grid { grid-auto-rows: 30px; }
+}
+
+/* ports: one per wire on each side; they grow and show their number while the wire tool is near */
+.m-fan { fill: none; stroke: #1f1f1f; stroke-width: 1.1; stroke-linejoin: round; }
+.m-pt { fill: #fff; stroke: #8c8c94; stroke-width: 1; transform-box: fill-box; transform-origin: center; transition: fill .15s; }
+.m-pt.on { fill: #1f1f1f; stroke: #1f1f1f; }
+.node.tM:not(.warn) .m-pt.on { transform: scale(.75); }
+.marr.near .m-pt { animation: mpIn .34s cubic-bezier(.3,1.5,.5,1) both; animation-delay: calc(var(--age) + var(--i) * 35ms);
+  --s: 1.7; stroke: var(--accent); stroke-width: .9; }
+.marr.near .m-pt:not(.on) { fill: #fff; }
+.marr.near .m-pt.on { fill: var(--accent); }
+.marr.near .m-pt.hot { --s: 2.4; fill: var(--accent); stroke: #fff; stroke-width: .7; filter: drop-shadow(0 0 2px rgba(91,91,214,.6)); }
+@keyframes mpIn { from { transform: scale(.6); opacity: .4; } to { transform: scale(var(--s)); opacity: 1; } }
+.marr.near .m-pt { transform: scale(var(--s)); }
+.m-num { font: 600 7.5px/1 system-ui, sans-serif; fill: var(--accent); opacity: 0; animation: mnIn .3s ease-out both;
+  animation-delay: calc(var(--age) + 80ms + var(--i) * 35ms); }
+.m-num.hot { font-size: 9px; }
+@keyframes mnIn { from { opacity: 0; transform: translateY(2px); } to { opacity: .9; transform: none; } }
+.node.tM .marr { left: 50%; top: 50%; transform: translate(-50%, -50%); }
+
+/* panel v2: the name is the title (inline rename), no extra rows */
+.m-name { border: 0; background: transparent; outline: none; padding: 2px 3px; margin-left: -3px; border-radius: 5px;
+  font: 600 14px/1.2 inherit; font-family: inherit; color: var(--ink); min-width: 2ch; max-width: 170px; cursor: text; transition: background .15s, box-shadow .15s; }
+.m-name:hover { background: var(--soft); }
+.m-name:focus { background: transparent; box-shadow: 0 1.5px 0 var(--accent); border-radius: 0; }
+.m-body .m-text { flex: 1; min-width: 0; }
+.m-stat[hidden] { display: none; }
+.m-stat { white-space: normal; }
+.ib:disabled { opacity: .35; cursor: default; background: transparent; }
+/* arrow → arrow: one bold wire */
+.edge.bundle .wire-p { stroke-width: 3.4; stroke-linecap: butt; }
+.edge.bundle.sel .wire-p { stroke: var(--accent); }
+/* convert-to-matrix-arrow icon in the selection panel: appears with a small pop */
+.ib.m-conv { width: 34px; color: var(--ink); animation: mconv .3s cubic-bezier(.3,1.5,.5,1); }
+.ib.m-conv:hover { color: var(--accent); background: rgba(91,91,214,.1); }
+@keyframes mconv { from { transform: scale(.6); opacity: 0; } }

@@ -35,6 +35,8 @@ const I = {
   down: ico('<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>', 16),
   up: ico('<path d="M12 15V4M7 9l5-5 5 5M5 20h14"/>', 16),
   loop: ico('<path d="M12 20v-7"/><path d="M12 13c-4.5-.5-5.5-8 0-8s4.5 7.5 0 8"/>', 16),
+  marrow: '<svg width="22" height="18" viewBox="0 0 26 18"><path d="M1.5 9h23" stroke="currentColor" stroke-width="2.6"/><path d="M8.6 4.4h4.6l4.3 4.6-4.3 4.6H8.6L12.6 9z" fill="#b9b9c2" stroke="currentColor" stroke-width="1.3" stroke-linejoin="miter"/></svg>',
+  unfold: ico('<path d="M3 12h4M17 12h4"/><circle cx="9.5" cy="7" r="1.6"/><circle cx="9.5" cy="17" r="1.6"/><circle cx="14.5" cy="7" r="1.6"/><circle cx="14.5" cy="17" r="1.6"/><path d="M11 7h2M11 8l2 8M11 16l2-8"/>', 16),
   rev: ico('<path d="M7 8h13l-3-3M17 16H4l3 3"/>', 16),
   map: ico('<path d="M9 4L3 6.5v13.5l6-2.5 6 2.5 6-2.5V4l-6 2.5z"/><path d="M9 4v13.5M15 6.5V20"/>', 16),
   close: ico('<path d="M7 7l10 10M17 7L7 17"/>', 13),
@@ -63,7 +65,7 @@ const CURVES = [
 ];
 const PHASES = [['π', '\\pi'], ['π/2', '\\frac{\\pi}{2}'], ['−π/2', '-\\frac{\\pi}{2}'], ['π/4', '\\frac{\\pi}{4}'], ['α', '\\alpha'], ['−α', '-\\alpha'], ['β', '\\beta'], ['α⊕β', '\\alpha\\oplus\\beta'], ['0', '']];
 const RULES = ['(sp)', '(id)', '(\\pi)', '(cc)', '(b)', '(hh)', '(sc)', '(eu)', '(h)', '(c)'];
-const RELS = [['None', ''], ['=', '='], ['∝', '\\propto'], ['≈', '\\approx'], ['⇒', '\\Rightarrow']];
+const RELS = [['None', ''], ['=', '='], [':=', ':='], ['∝', '\\propto'], ['≈', '\\approx'], ['⇒', '\\Rightarrow']];
 
 const EXAMPLE = String.raw`\[
     \zx[row sep=3mm, column sep=4mm]{
@@ -119,7 +121,8 @@ const fallbackTex = (s) => s.replace(/\\pi/g, 'π').replace(/\\alpha/g, 'α').re
 const pos = (d, n) => ({ x: d.ox + n.c * CW, y: d.oy + n.r * CH });
 const at = (d, r, c) => d.nodes.find((n) => n.r === r && n.c === c);
 const cellOf = (d, p) => ({ r: Math.round((p.y - d.oy) / CH), c: Math.round((p.x - d.ox) / CW) });
-const makeNode = (t, r, c) => ({ id: ZX.newId('n'), r, c, t, label: t === 'T' ? '\\vdots' : '', cmd: '', v: '', st: '' });
+const makeNode = (t, r, c) => Object.assign({ id: ZX.newId('n'), r, c, t, label: t === 'T' ? '\\vdots' : '', cmd: '', v: '', st: '' },
+  t === 'M' ? { label: 'A', lin: '', lout: '', mat: null } : {});
 function findNode(id) { for (const d of doc.diagrams) { const n = d.nodes.find((m) => m.id === id); if (n) return { n, d }; } return null; }
 function findEdge(id) { for (const d of doc.diagrams) { const e = d.edges.find((m) => m.id === id); if (e) return { e, d }; } return null; }
 function frameRect(d) {
@@ -251,7 +254,7 @@ function backupInfo(b) {
     return { tabs: tabs.map((t) => ({ name: t.name || 'Page', doc: cleanDoc(JSON.parse(JSON.stringify(t.doc || null))), locked: !!t.locked })), active: Math.min(w.active | 0, tabs.length - 1) };
   } catch (_) { return null; }
 }
-function commit() { errMark = null; save(); render(); }
+function commit() { errMark = null; save(); render(); queueMatSpot(); }
 function mutate(fn) { snapshot(); fn(); commit(); }
 function pruneSel() { sel = new Set([...sel].filter((id) => (id[0] === 'n' ? findNode(id) : findEdge(id)))); }
 // ⌘Z on an untouched page made by Simplify (new page / simplify all) removes that page again
@@ -267,8 +270,54 @@ function undo() { if (lockedStop()) return; if (!hist.length) return wsPrev ? re
 function redo() { if (lockedStop()) return; if (!redoStack.length) return; hist.push(JSON.stringify(doc)); doc = JSON.parse(redoStack.pop()); pruneSel(); commit(); }
 
 // ---------- geometry of edges ----------
+// Matrix arrow ports: one per column of A on the input side, one per row on the output side.
+// L / R are the drawn sides (inputs are on the left unless the arrow points left).
+const M_BAR = 20, M_PORT = 30;
+// bundled sides (arrow → arrow, port j to port j): one bold wire, no ports drawn
+function mBundled(d, n) {
+  const out = { in: false, out: false };
+  if (!d) return out;
+  const b = ZX.matBundles(d);
+  if (!b.size) return out;
+  b.forEach((x) => { if (x.a === n.id) out.out = true; if (x.b === n.id) out.in = true; });
+  return out;
+}
+function mSlots(d, n) {
+  const R = n.mat ? n.mat.length : 0, C = n.mat && n.mat[0] ? n.mat[0].length : 0;
+  let si, so;
+  if (d) { const s = ZX.matSides(d, n); si = s.inSlots; so = s.outSlots; } else { si = []; so = []; }
+  const pad = (S, k) => { const out = S.slice(); while (out.length < Math.max(k, 1)) out.push(null); return out; };
+  // no matrix yet: one free port more than the wires drawn, so there is always somewhere to connect
+  const ki = n.mat ? C : si.filter(Boolean).length + 1, ko = n.mat ? R : so.filter(Boolean).length + 1;
+  const I = pad(si, ki), O = pad(so, ko), fl = n.v === '<', bu = mBundled(d, n);
+  return { I, O, L: fl ? O : I, R: fl ? I : O, Lside: fl ? 'out' : 'in', Rside: fl ? 'in' : 'out', bL: fl ? bu.out : bu.in, bR: fl ? bu.in : bu.out };
+}
+const mGap = (k) => (k > 1 ? Math.min(10, 40 / (k - 1)) : 0);
+const mPortY = (k, j) => (j - (k - 1) / 2) * mGap(k);
+const mHeight = (sl) => { const kL = sl.bL ? 1 : sl.L.length, kR = sl.bR ? 1 : sl.R.length; return Math.max(30, Math.max(kL - 1, kR - 1, 0) * Math.max(mGap(kL), mGap(kR)) + 16); };
+// where wire e meets arrow n drawn at p
+let mTipHalf = 0;   // image export: wires meet the two ends of the bar, as in LaTeX
+function mTip(d, n, e, p) {
+  const sl = mSlots(d, n);
+  for (const [S, sx, bu] of [[sl.L, -1, sl.bL], [sl.R, 1, sl.bR]]) {
+    const j = S.findIndex((x) => x && x.e.id === e.id);
+    if (j >= 0 && mTipHalf) return { x: p.x + sx * mTipHalf, y: p.y };
+    if (j >= 0 && bu) return { x: p.x + sx * M_PORT, y: p.y };
+    if (j >= 0) return { x: p.x + sx * M_PORT, y: p.y + mPortY(S.length, j) };
+  }
+  return p;
+}
+// the port nearest to world point q on arrow n: { side: 'in' | 'out', j, x, y }
+function pickPort(d, n, q) {
+  const p = pos(d, n), sl = mSlots(d, n), left = q.x < p.x, S = left ? sl.L : sl.R, k = S.length;
+  let j = 0, best = Infinity;
+  for (let i = 0; i < k; i++) { const dy = Math.abs(q.y - (p.y + mPortY(k, i))); if (dy < best) { best = dy; j = i; } }
+  return { side: left ? sl.Lside : sl.Rside, j, x: p.x + (left ? -M_PORT : M_PORT), y: p.y + mPortY(k, j), id: n.id, L: left };
+}
 function rawGeom(d, e, A, B, P = pos) {
-  const p0 = P(d, A), p1 = P(d, B);
+  let p0 = P(d, A), p1 = P(d, B);
+  if (A !== B && A.t === 'M') p0 = mTip(d, A, e, p0);
+  if (A !== B && B.t === 'M') p1 = mTip(d, B, e, p1);
   const toks = ZX.splitOpts(e.o);
   const hbox = toks.includes('H');
   const cubic = (c1, c2) => ({
@@ -395,8 +444,36 @@ function tick() {
 }
 
 // ---------- render ----------
-function nodeHTML(n, p, s, io) {
-  let cls = 'node t' + n.t, inner = '';
+// Matrix arrow: bold wire with a chevron, labels n (inputs) · A · m (outputs), and a port per wire on each side.
+// While wiring near it the ports grow and show their numbers (mNear / mHot; the animation keeps its phase across redraws).
+let mNear = null, mHot = null;
+function mArrowInner(n, d) {
+  const fl = n.v === '<', sl = mSlots(d, n), H = mHeight(sl), L = ZX.matLabels(n);
+  const lab = (t, k) => (t ? `<span class="ml ${k}">${tex(t)}</span>` : '');
+  const near = mNear && mNear.id === n.id, hot = mHot && mHot.id === n.id ? mHot : null;
+  const ports = [];
+  [[sl.L, -1, sl.Lside, sl.bL], [sl.R, 1, sl.Rside, sl.bR]].forEach(([S, sx, side, bu]) => {
+    if (bu) { ports.push(`<path d="M${sx * M_BAR} 0H${sx * (M_PORT + 1)}" class="m-bar"/>`); return; }   // bundle: the bar runs on
+    const k = S.length;
+    S.forEach((x, j) => {
+      const y = mPortY(k, j), h = hot && hot.side === side && hot.j === j;
+      ports.push(`<path class="m-fan" d="M${sx * M_BAR} 0L${sx * (M_PORT - 3)} ${y}L${sx * M_PORT} ${y}"/>`);
+      ports.push(`<circle class="m-pt${x ? ' on' : ''}${h ? ' hot' : ''}" cx="${sx * M_PORT}" cy="${y}" r="2.4" style="--i:${j}"/>`);
+      if (near) ports.push(`<text class="m-num${h ? ' hot' : ''}" x="${sx * (M_PORT + 7)}" y="${y + 3}" text-anchor="middle" style="--i:${j}">${j + 1}</text>`);
+    });
+  });
+  const age = near ? -(performance.now() - mNear.t0) | 0 : 0;
+  return `<svg class="marr${near ? ' near' : ''}" width="${2 * M_PORT}" height="${H}" viewBox="${-M_PORT} ${-H / 2} ${2 * M_PORT} ${H}" style="--age:${age}ms">`
+    + `<path d="M${-M_BAR} 0H${M_BAR}" class="m-bar"/>${ports.join('')}<path class="m-chev" transform="scale(${fl ? -1 : 1} 1)" d="M-5.6 -5.6H0.6L6.2 0 0.6 5.6H-5.6L-0.4 0Z"/></svg>`
+    + lab(n.label, 'ml-a') + (sl.bL && !(fl ? n.lout : n.lin) ? '' : lab(fl ? L.lout : L.lin, 'ml-l')) + (sl.bR && !(fl ? n.lin : n.lout) ? '' : lab(fl ? L.lin : L.lout, 'ml-r'));
+}
+function nodeHTML(n, p, s, io, d) {
+  let cls = 'node t' + n.t, inner = '', warn = '', hs = '';
+  if (n.t === 'M') {
+    inner = mArrowInner(n, d); warn = d ? matWarn(d, n) : '';
+    if (warn) cls += ' warn';
+    hs = `;height:${mHeight(mSlots(d, n))}px`;
+  }
   if (io) cls += io[0] === 'i' ? ' bin' : ' bout';
   if (n.t === 'Z' || n.t === 'X') {
     if ((n.cmd === 'Ctrl' || n.cmd === 'Not') && !n.label) cls += ' tiny';
@@ -410,7 +487,7 @@ function nodeHTML(n, p, s, io) {
   }
   if (s) cls += ' sel';
   const fx = p.s != null ? `;transform:translate(-50%,-50%) scale(${p.s.toFixed(3)});opacity:${Math.min(1, p.s * 1.4).toFixed(3)}` : '';
-  return `<div class="${cls}" data-node="${n.id}"${io ? ` data-io="${io}"` : ''} style="left:${p.x}px;top:${p.y}px${fx}">${inner}</div>`;
+  return `<div class="${cls}" data-node="${n.id}"${io ? ` data-io="${io}"` : ''}${warn ? ` data-warn="${esc(warn)}"` : ''} style="left:${p.x}px;top:${p.y}px${hs}${fx}">${inner}</div>`;
 }
 
 function render() {
@@ -433,9 +510,17 @@ function render() {
       <button data-act="mat" data-fi="${di}" title="Matrix of this diagram">${I.matrix}</button>
       <button data-act="del" data-fi="${di}" class="danger" title="Delete diagram">${I.trash}</button></div>`);
     const byId = new Map(d.nodes.map((n) => [n.id, n]));
+    const bun = ZX.matBundles(d);
     d.edges.forEach((e) => {
       const A = byId.get(e.a), B = byId.get(e.b);
       if (!A || !B) return;
+      const bu = bun.get(e.id);
+      if (bu && !bu.lead) return;
+      if (bu) {
+        const g = rawGeom(d, e, A, B, dpos), on = [...bun].some(([id, x]) => x.a === bu.a && x.b === bu.b && sel.has(id));
+        S.push(`<g class="edge bundle${on ? ' sel' : ''}" data-edge="${e.id}"><path class="hit" d="${g.d}"/><path class="wire-p" d="${g.d}"/></g>`);
+        return;
+      }
       const g = edgeGeom(d, e, A, B, dpos);
       S.push(`<g class="edge${sel.has(e.id) ? ' sel' : ''}${drag && drag.dropId === e.id ? ' drop' : ''}" data-edge="${e.id}"><path class="hit" d="${g.d}"/><path class="wire-p" d="${g.d}"/>${g.h ? `<rect class="hbox" x="${g.m.x - 7}" y="${g.m.y - 7}" width="14" height="14"/>` : ''}</g>`);
       const bh = tool === 'select' && sel.size === 1 && sel.has(e.id) && (!tween || tweenK >= 1) && bendHandle(d, e, A, B, g);
@@ -445,7 +530,7 @@ function render() {
       }
     });
     const io = ioMap(d);
-    d.nodes.forEach((n) => { const p = dpos(d, n); lastDisp.set(n.id, { x: p.x, y: p.y }); const h = nodeHTML(n, p, sel.has(n.id), io.get(n.id)); N.push((wirePend && wirePend.n === n) || (tool === 'edge' && sel.size > 1 && sel.has(n.id)) ? h.replace('class="node', 'class="node wfrom') : h); });
+    d.nodes.forEach((n) => { const p = dpos(d, n); lastDisp.set(n.id, { x: p.x, y: p.y }); const h = nodeHTML(n, p, sel.has(n.id), io.get(n.id), d); N.push((wirePend && wirePend.n === n) || (tool === 'edge' && sel.size > 1 && sel.has(n.id)) ? h.replace('class="node', 'class="node wfrom') : h); });
   });
   const starts = lineStarts();
   for (let i = 0; i + 1 < rects.length; i++) {
@@ -479,7 +564,7 @@ function render() {
     if (ss.length > 1) ss.forEach((n) => { const q = pos(fd, n); S.push(`<path class="ghost-line fan" d="M${q.x} ${q.y}L${fanTp.x} ${fanTp.y}"/>`); });
   }
   if (!drag && wirePend && wirePend.tp && doc.diagrams.includes(wirePend.d)) {
-    const q = pos(wirePend.d, wirePend.n);
+    const q = wirePend.port || pos(wirePend.d, wirePend.n);
     S.push(`<path class="ghost-line" d="M${q.x} ${q.y}L${wirePend.tp.x} ${wirePend.tp.y}"/>`);
   }
   if (drag && drag.type === 'ghost' && drag.tp) N.push(nodeHTML(drag.n, drag.tp, false).replace('class="node', 'class="node ghost'));
@@ -738,10 +823,10 @@ window.addEventListener('pointercancel', () => endSlide(false));
 // ---------- tools ----------
 function setTool(t) {
   tool = t;
-  wirePend = null;
+  wirePend = null; mNear = mHot = null;
   document.querySelectorAll('.tool[data-tool]').forEach((b) => b.classList.toggle('on', b.dataset.tool === t));
   syncPill($('#dock'));
-  vp.classList.toggle('place', ['Z', 'X', 'H', 'N', 'T', 'P'].includes(t));
+  vp.classList.toggle('place', ['Z', 'X', 'H', 'N', 'T', 'P', 'M'].includes(t));
   vp.classList.toggle('wire', t === 'edge');
   vp.classList.toggle('hand', t === 'hand');
 }
@@ -753,7 +838,7 @@ function placeNode(p, t) {
     activeDi = doc.diagrams.indexOf(d);
     const c = cellOf(d, p), ex = at(d, c.r, c.c);
     if (ex) sel = new Set([ex.id]);
-    else { const n = makeNode(t, c.r, c.c); d.nodes.push(n); sel = new Set([n.id]); }
+    else { const n = makeNode(t, c.r, c.c); if (t === 'M') n.label = nextMatName(); d.nodes.push(n); sel = new Set([n.id]); if (t === 'M') { inspOpen = true; mFocus = true; return; } }
     inspOpen = false;
   }, 220);
 }
@@ -888,11 +973,17 @@ function tidyWouldChange() {
   } catch (_) { after = before; } finally { doc = saved; }
   return after !== before;
 }
+// The top chip: "tidy the layout?" by default, or any other one-click offer.
+function showChip(text, btn, go) {
+  const s = $('#suggest');
+  s.querySelector('.sg-text').textContent = text;
+  $('#sgGo').textContent = btn; $('#sgGo').onclick = () => { hideSuggest(); go(); };
+  s.classList.remove('closing'); s.hidden = false;
+  clearTimeout(sgT); sgT = setTimeout(hideSuggest, 9000);
+}
 function showSuggest() {
   if (!tidyWouldChange()) return hideSuggest();
-  const s = $('#suggest');
-  s.classList.remove('closing'); s.hidden = false;
-  clearTimeout(sgT); sgT = setTimeout(hideSuggest, 8000);
+  showChip('Layout changed — tidy it up?', 'Tidy layout', tidyAll);
 }
 function hideSuggest() {
   const s = $('#suggest');
@@ -905,6 +996,7 @@ function deleteSel() {
   if (!sel.size) return;
   if (lockedStop()) return;
   const dn = new Set([...sel].filter((i) => i[0] === 'n')), de = new Set([...sel].filter((i) => i[0] === 'e'));
+  doc.diagrams.forEach((d) => { const b = ZX.matBundles(d); b.forEach((x, id) => { if (de.has(id)) b.forEach((y, id2) => { if (y.a === x.a && y.b === x.b) de.add(id2); }); }); });
   const w0 = doc.diagrams.map(dWidth);
   let removed = 0;
   mutate(() => {
@@ -1145,7 +1237,7 @@ function rotateDiagram(i) {
   snapshot();
   animate(() => {
     const b = ZX.bounds(d);
-    d.nodes.forEach((n) => { n.r = b.r0 + b.r1 - n.r; n.c = b.c0 + b.c1 - n.c; });
+    d.nodes.forEach((n) => { n.r = b.r0 + b.r1 - n.r; n.c = b.c0 + b.c1 - n.c; if (n.t === 'M') n.v = n.v === '<' ? '' : '<'; });
     d.edges.forEach((e) => { e.o = ZX.splitOpts(e.o || '').map(rotTok).join(', '); });
   }, 420);
   activeDi = i;
@@ -1202,24 +1294,28 @@ function updateInspector() {
     inspSig = ''; pillMem.type = pillMem.curve = pillMem.loop = null;
     return hideInsp();
   }
-  const ae = document.activeElement, typing = insp.contains(ae) && ae.tagName === 'INPUT';
+  const ae = document.activeElement, typing = insp.contains(ae) && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA');
   const multi = nodes.length + edges.length > 1;
   // Rebuild only when *what* is selected changes; edits are patched in place so the pills slide.
-  const sig = JSON.stringify([nodes.map((x) => x.n.id), edges.map((x) => [x.e.id, x.e.a === x.e.b]), multi ? nodes.map((x) => x.n.t) : 0]);
+  const sig = JSON.stringify([multi && selBlock() ? 1 : 0, nodes.map((x) => x.n.id + x.n.t), edges.map((x) => [x.e.id, x.e.a === x.e.b]), multi ? nodes.map((x) => x.n.t) : 0]);
   clearTimeout(inspHideT); insp.classList.remove('closing');
   if (sig !== inspSig && !typing) { inspSig = sig; insp.innerHTML = buildInsp(nodes, edges); }
   insp.hidden = false;
+  insp.classList.toggle('mpanel', nodes.length === 1 && !edges.length && nodes[0].n.t === 'M');
   refreshInsp(nodes, edges);
   positionInsp();
+  if (mFocus) { mFocus = false; const ta = insp.querySelector('textarea[data-i="mtext"]'); if (ta && !isPhone()) setTimeout(() => ta.focus(), 60); }
 }
 function buildInsp(nodes, edges) {
   if (nodes.length + edges.length > 1) {
     const zx = nodes.some((x) => x.n.t === 'Z' || x.n.t === 'X');
     return `<div class="row"><span class="count">${nodes.length ? nodes.length + ' node' + (nodes.length > 1 ? 's' : '') : ''}${nodes.length && edges.length ? ' · ' : ''}${edges.length ? edges.length + ' wire' + (edges.length > 1 ? 's' : '') : ''}</span>
       ${zx ? `<button class="ib" data-i="swap" title="Swap Z ↔ X colour (C)">${I.swap}</button>` : ''}
+      ${selBlock() ? `<button class="ib m-conv" data-i="tomat" title="Convert to matrix arrow (⇧A)">${I.marrow}</button>` : ''}
       ${nodes.length ? `<button class="ib" data-i="copy" title="Copy (⌘C)">${I.copy}</button>` : ''}
       <button class="ib danger" data-i="del" title="Delete (⌫)">${I.trash}</button></div>`;
   }
+  if (nodes.length && nodes[0].n.t === 'M') return buildMatInsp(nodes[0].n);
   if (nodes.length) {
     const types = [['Z', '', 'Z spider'], ['X', '', 'X spider'], ['H', '', 'H box'], ['N', 'wire', 'Wire point / boundary'], ['P', '', 'Dot: routing point (bends, swaps, crossings)'], ['T', '', 'Text cell (\\vdots, \\cdots …)']].map(([t, l, ti]) =>
       `<button data-i="type" data-v="${t}" title="${ti}">${t === 'T' ? `<span class="ti-t">${I.text}</span>` : `<span class="sw ${t}"></span>`}${l}</button>`).join('');
@@ -1243,6 +1339,7 @@ function buildInsp(nodes, edges) {
 function refreshInsp(nodes, edges) {
   if (nodes.length + edges.length !== 1) return;
   const ae = document.activeElement;
+  if (nodes.length && nodes[0].n.t === 'M') return refreshMatInsp(nodes[0].n, nodes[0].d);
   if (nodes.length) {
     const n = nodes[0].n, sp = n.t === 'Z' || n.t === 'X' || n.t === 'T';
     const fl = insp.querySelector('[data-c="phase"] .field > span');
@@ -1264,6 +1361,144 @@ function refreshInsp(nodes, edges) {
   }
   syncAllPills(insp);
 }
+// ---------- matrix arrows: panel, expand ⇄ fold, spotting Z–X blocks ----------
+let mFocus = false, mErr = '';
+const matWarn = (d, n) => { const i = ZX.matInfo(d, n); return i.ok ? '' : i.msg; };
+const matRows = (m) => (m ? m.map((r) => r.join(' ')).join('\n') : '');
+function buildMatInsp() {
+  return `<div class="row m-head"><span class="m-ttl">${I.marrow}<input data-i="mname" class="m-name" placeholder="A" spellcheck="false" autocomplete="off" title="Name — click to rename"></span><span class="m-sp"></span>
+      <button class="ib" data-i="mexp" title="Expand into Z / X spiders (⇧A)">${I.unfold}</button>
+      <button class="ib danger" data-i="del" title="Delete (⌫)">${I.trash}</button></div>
+    <div class="m-body">
+      <div class="m-gw"><div class="m-grid" data-mgrid></div></div>
+      <textarea data-i="mtext" class="m-text" rows="3" placeholder="1 0 1&#10;1 1 0" spellcheck="false" autocomplete="off"></textarea>
+    </div>
+    <div class="m-stat" data-mstat></div>`;
+}
+function refreshMatInsp(n, d) {
+  const ae = document.activeElement;
+  const nm = insp.querySelector('[data-i="mname"]');
+  if (nm && nm !== ae) nm.value = n.label || '';
+  if (nm) nm.style.width = Math.max(2, (nm.value || nm.placeholder).length + 1) + 'ch';
+  const ta = insp.querySelector('[data-i="mtext"]');
+  if (ta && ta !== ae) { ta.value = matRows(n.mat); mErr = ''; }
+  if (ta) ta.classList.toggle('bad', !!mErr);
+  const g = insp.querySelector('[data-mgrid]'), m = n.mat, R = m ? m.length : 0, C = m && m[0] ? m[0].length : 0;
+  if (g) {
+    g.parentNode.classList.toggle('none', !m);
+    g.style.gridTemplateColumns = `repeat(${C}, var(--mbw, 24px)) 14px`;
+    let h = '';
+    for (let i = 0; i < R; i++) for (let j = 0; j < C; j++) h += `<button class="mb${m[i][j] ? ' on' : ''}" data-i="mbit" data-r="${i}" data-c="${j}" style="grid-row:${i + 1};grid-column:${j + 1}" title="Output ${i + 1} · input ${j + 1}">${m[i][j]}</button>`;
+    if (m) h += `<button class="madd mc" data-i="maddc" style="grid-row:1/span ${R};grid-column:${C + 1}" title="Add a column (an input)">+</button><button class="madd mr" data-i="maddr" style="grid-row:${R + 1};grid-column:1/span ${C}" title="Add a row (an output)">+</button>`;
+    g.innerHTML = h;
+  }
+  // only something wrong is worth a line: a typo in the entries, or wires that do not fit A
+  const info = ZX.matInfo(d, n), st = insp.querySelector('[data-mstat]');
+  const msg = mErr || (n.mat && !info.ok ? info.msg : '');
+  if (st) { st.className = 'm-stat' + (mErr ? ' err' : msg ? ' warn' : ''); st.textContent = msg; st.hidden = !msg; }
+  const ex = insp.querySelector('[data-i="mexp"]'); if (ex) ex.disabled = !info.ok;
+}
+function matInput(n, el) {
+  const k = el.dataset.i, v = el.value;
+  if (k === 'mname') { n.label = v; el.style.width = Math.max(2, (v || el.placeholder).length + 1) + 'ch'; }
+  else if (k === 'mtext') {
+    if (!v.trim()) { n.mat = null; mErr = ''; return; }
+    const r = ZX.parseMatrix(v);
+    if (r.err) mErr = r.err; else { n.mat = r.rows; mErr = ''; }
+  }
+}
+function matClick(n, d, b) {
+  const a = b.dataset.i, m = n.mat ? n.mat.map((r) => r.slice()) : null;   // copies: duplicated diagrams share nothing
+  if (a === 'mexp') return toggleMat();
+  mutate(() => {
+    if (a === 'mflip') n.v = n.v === '<' ? '' : '<';
+    if (a === 'mbit') { m[+b.dataset.r][+b.dataset.c] ^= 1; n.mat = m; }
+    if (a === 'maddc') n.mat = m ? m.map((r) => r.concat(0)) : [[0]];
+    if (a === 'maddr') n.mat = m ? m.concat([m[0].map(() => 0)]) : [[0]];
+  });
+}
+// Name for a new matrix arrow: the first letter of the alphabet no arrow on this page uses
+// (a deleted arrow's letter comes free again). After Z: A_2, B_2 …
+function nextMatName(except) {
+  const used = new Set();
+  doc.diagrams.forEach((d) => d.nodes.forEach((n) => { if (n.t === 'M' && n !== except) used.add((n.label || '').trim()); }));
+  const L = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+  for (let k = 1; ; k++) for (const c of L) { const nm = k === 1 ? c : `${c}_${k}`; if (!used.has(nm)) return nm; }
+}
+// The selection, if its Z / X spiders form exactly one block in parity normal form:
+// each Z has one outside wire (its input), each X one (its output), only Z–X wires inside, never two between a pair.
+function selBlock() {
+  const sn = selected().nodes.filter((x) => x.n.t === 'Z' || x.n.t === 'X');
+  if (sn.length < 2 || !sn.every((x) => x.d === sn[0].d)) return null;
+  const d = sn[0].d, only = new Set(sn.map((x) => x.n.id)), bs = ZX.findMatBlocks(d, only);
+  return bs.length === 1 && bs[0].ids.length === only.size ? { d, b: bs[0] } : null;
+}
+// Shift+A: expand the selected arrows, otherwise fold the selected block (or every block in this diagram)
+function toggleMat() {
+  if (lockedStop()) return;
+  const sn = selected().nodes, ms = sn.filter((x) => x.n.t === 'M');
+  if (ms.length) return expandMatSel(ms);
+  let d = doc.diagrams[activeDi], only = null;
+  const sp = sn.filter((x) => x.n.t === 'Z' || x.n.t === 'X');   // a box selection also holds wire ends: only spiders count
+  if (sp.length >= 2 && sp.every((x) => x.d === sp[0].d)) { d = sp[0].d; only = new Set(sp.map((x) => x.n.id)); }
+  if (!d) return toast('Nothing to fold here');
+  const blocks = ZX.findMatBlocks(d, only);
+  if (!blocks.length) return toast(only ? 'Not a matrix block: phase-free Z and X spiders, Z only wired to X, one outside wire each'
+    : 'No phase-free Z–X block here. Select a matrix arrow to expand it');
+  foldBlocks(d, blocks);
+}
+function foldBlocks(d, blocks) {
+  snapshot();
+  const made = [];
+  animate(() => {
+    blocks.forEach((b) => {
+      const ps = b.ids.map((id) => lastDisp.get(id)).filter(Boolean);
+      const cen = ps.length ? { x: ps.reduce((s, p) => s + p.x, 0) / ps.length, y: ps.reduce((s, p) => s + p.y, 0) / ps.length } : null;
+      const M = ZX.foldMat(d, b);
+      if (M) { M.label = nextMatName(M); made.push([M, cen]); }
+    });
+    sel = new Set(made.map(([M]) => M.id)); inspOpen = false;
+    activeDi = Math.max(0, doc.diagrams.indexOf(d));
+  }, 420);
+  if (!made.length) { tween = null; hist.pop(); render(); return toast('No free cell for the arrow between its input and output wires'); }
+  made.forEach(([M, c]) => { if (c && tween) tween.from.set(M.id, c); });
+  const A = made[0][0].mat;
+  setTimeout(showSuggest, 500);
+  toast(made.length > 1 ? `Folded ${made.length} blocks into matrix arrows — ⇧A expands` : `Folded into a ${A.length}×${A[0].length} matrix arrow — ⇧A expands it again`);
+}
+function expandMatSel(ms) {
+  const bad = ms.find(({ n, d }) => !ZX.matInfo(d, n).ok);
+  if (bad) { sel = new Set([bad.n.id]); inspOpen = true; render(); return toast(ZX.matInfo(bad.d, bad.n).msg); }
+  snapshot();
+  const news = [];
+  animate(() => {
+    ms.forEach(({ n, d }) => { const f = lastDisp.get(n.id); ZX.expandMat(d, n.id, true).forEach((m) => news.push([m, f])); });
+    sel = new Set(news.filter(([m]) => m.t !== 'N').map(([m]) => m.id)); inspOpen = false;
+  }, 460);
+  news.forEach(([m, f]) => { if (f && tween) tween.from.set(m.id, f); });   // the spiders burst out of the arrow
+  matSeen.add(blockKey(news.filter(([m]) => m.t !== 'N').map(([m]) => m.id)));
+  showSuggest();
+}
+// After an edit: a block that is exactly a matrix arrow gets a one-time offer in the top chip.
+const matSeen = new Set();
+const blockKey = (ids) => ids.slice().sort().join(',');
+let matSpotT = 0;
+function queueMatSpot() {
+  clearTimeout(matSpotT);
+  matSpotT = setTimeout(() => {
+    const d = doc.diagrams[activeDi], s = $('#suggest');
+    if (!d || drag || isLocked() || preview || (!s.hidden && !s.classList.contains('closing'))) return;
+    const blocks = ZX.findMatBlocks(d).filter((b) => b.ids.length >= 4 && !matSeen.has(blockKey(b.ids)));
+    if (!blocks.length) return;
+    blocks.forEach((b) => matSeen.add(blockKey(b.ids)));
+    const A = blocks[0].A;
+    showChip(blocks.length > 1 ? `${blocks.length} Z–X blocks here are matrix arrows` : `This Z–X block is a ${A.length}×${A[0].length} matrix arrow`, 'Fold  ⇧A', () => {
+      const bs = doc.diagrams.includes(d) ? ZX.findMatBlocks(d).filter((b) => b.ids.length >= 4) : [];
+      if (bs.length) foldBlocks(d, bs);
+    });
+  }, 700);
+}
+
 function positionInsp() {
   if (insp.hidden || isPhone()) return;
   const { nodes, edges } = selected();
@@ -1289,10 +1524,11 @@ insp.addEventListener('input', (ev) => {
   const el = ev.target, { nodes, edges } = selected();
   if (!typingSnap) { snapshot(); typingSnap = true; }
   if (el.dataset.i === 'label' && nodes[0]) nodes[0].n.label = el.value;
+  if (nodes[0] && nodes[0].n.t === 'M') matInput(nodes[0].n, el);
   if (el.dataset.i === 'opts' && edges[0]) edges[0].e.o = el.value;
   save(); render();
 });
-insp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') ev.target.blur(); ev.stopPropagation(); if (ev.key === 'Escape') ev.target.blur(); });
+insp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && (ev.target.tagName !== 'TEXTAREA' || ev.metaKey || ev.ctrlKey)) ev.target.blur(); ev.stopPropagation(); if (ev.key === 'Escape') ev.target.blur(); });
 insp.addEventListener('focusout', () => setTimeout(() => { inspSig = ''; updateInspector(); }, 0));
 insp.addEventListener('click', (ev) => {
   const b = ev.target.closest('[data-i]');
@@ -1301,6 +1537,8 @@ insp.addEventListener('click', (ev) => {
   if (a === 'del') return deleteSel();
   if (a === 'swap') return swapColour();
   if (a === 'copy') return copySel();
+  if (a === 'tomat') { const bk = selBlock(); return bk && foldBlocks(bk.d, [bk.b]); }
+  if (a[0] === 'm' && nodes[0] && nodes[0].n.t === 'M') return matClick(nodes[0].n, nodes[0].d, b);
   if (a === 'type') return mutate(() => nodes.forEach(({ n }) => setType(n, v)));
   if (a === 'phase') return mutate(() => { nodes[0].n.label = v; });
   if (a === 'loop') return mutate(() => { const { n, d } = nodes[0]; d.edges.push({ id: ZX.newId('e'), a: n.id, b: n.id, o: 'loop above' }); });
@@ -1410,6 +1648,7 @@ pop.addEventListener('click', (ev) => {
   if (b.dataset.s === 'lc') { matState.check = v; try { localStorage.setItem('zx-draw-check', v); } catch (_) {} if (!liveCheck) setLiveCheck(true); else render(); pop._redraw(); return; }
   if (b.dataset.s === 'lb') { matState.vals[b.dataset.k] = +v; render(); pop._redraw(); return; }
   if (b.dataset.s === 'simp-ins') return applySimplify(i, 'after');
+  if (b.dataset.s === 'simp-pnf') return openSimplify(i, null, null, { pnf: true });
   if (b.dataset.s === 'simp-new') return applySimplify(i, 'page');
   if (b.dataset.s === 'simp-all') return simplifyAll();
   if (b.dataset.s === 'simp-mat') return openMatrix(i, true);
@@ -1490,7 +1729,11 @@ vp.addEventListener('pointerdown', (e) => {
     if (!f) return;
     const { n, d } = f;
     activeDi = doc.diagrams.indexOf(d);
-    if (tool === 'edge') { drag = { type: 'edge', d, from: n, p0: pos(d, n), tp: null, tgt: {}, chain: [n], lp: p, mod: e.metaKey || e.ctrlKey, shift: e.shiftKey }; return; }
+    if (tool === 'edge') {
+      const sp = n.t === 'M' ? pickPort(d, n, p) : null;
+      drag = { type: 'edge', d, from: n, p0: sp || pos(d, n), startPort: sp, tp: null, tgt: {}, chain: [n], lp: p, mod: e.metaKey || e.ctrlKey, shift: e.shiftKey };
+      return;
+    }
     if (tool === 'select' && (e.ctrlKey || e.metaKey || e.altKey)) {
       // Ctrl: move the node itself; ⌘ / Alt: copy it. Neither carries the old wires.
       sel = new Set([n.id]); inspOpen = false;
@@ -1500,7 +1743,7 @@ vp.addEventListener('pointerdown', (e) => {
       return;
     }
     // Node tools act like Select on an existing node: select it, never retype it.
-    const again = (tool === 'select' || ['Z', 'X', 'H', 'N', 'T', 'P'].includes(tool)) && sel.size === 1 && sel.has(n.id) && !inspOpen && !e.shiftKey;
+    const again = (tool === 'select' || ['Z', 'X', 'H', 'N', 'T', 'P', 'M'].includes(tool)) && sel.size === 1 && sel.has(n.id) && !inspOpen && !e.shiftKey;
     if (e.shiftKey) { sel.has(n.id) ? sel.delete(n.id) : sel.add(n.id); inspOpen = false; render(); return; }
     if (!sel.has(n.id)) { sel = new Set([n.id]); inspOpen = false; }
     const ids = [...sel].filter((id) => id[0] === 'n' && d.nodes.some((m) => m.id === id));
@@ -1523,7 +1766,7 @@ vp.addEventListener('pointerdown', (e) => {
   }
   // empty canvas
   lastTap = null;
-  if (['Z', 'X', 'H', 'N', 'T', 'P'].includes(tool)) return placeNode(p, tool);
+  if (['Z', 'X', 'H', 'N', 'T', 'P', 'M'].includes(tool)) return placeNode(p, tool);
   if (tool === 'edge') {
     const had = doc.diagrams.length;
     const d = pickDiagram(p), c = cellOf(d, p);
@@ -1563,7 +1806,8 @@ vp.addEventListener('pointermove', (e) => {
   const p = toWorld(e.clientX, e.clientY);
   lastWorld = p;
   if (!drag) {
-    if (wirePend && tool === 'edge') { const c = cellOf(wirePend.d, p); wirePend.tp = { x: wirePend.d.ox + c.c * CW, y: wirePend.d.oy + c.r * CH }; render(); }
+    if (tool === 'edge' && mWatch(null, p)) render();
+    if (wirePend && tool === 'edge') { const c = cellOf(wirePend.d, p); wirePend.tp = mHot && mHot.id !== wirePend.n.id ? { x: mHot.x, y: mHot.y } : { x: wirePend.d.ox + c.c * CW, y: wirePend.d.oy + c.r * CH }; render(); }
     else if (tool === 'edge' && sel.size > 1) {
       const fd = doc.diagrams.find((d) => d.nodes.some((n) => sel.has(n.id)));
       if (fd && fanSources(fd).length > 1) { const c = cellOf(fd, p), q = { x: fd.ox + c.c * CW, y: fd.oy + c.r * CH }; if (!fanTp || fanTp.x !== q.x || fanTp.y !== q.y) { fanTp = q; render(); } }
@@ -1629,6 +1873,9 @@ vp.addEventListener('pointermove', (e) => {
     const cell = node ? { r: node.r, c: node.c } : cellOf(drag.d, p);
     drag.tgt = node ? { node } : { cell };
     drag.tp = { x: drag.d.ox + cell.c * CW, y: drag.d.oy + cell.r * CH };
+    drag.port = node && node.t === 'M' && node !== drag.from ? pickPort(drag.d, node, p) : null;
+    if (drag.port) drag.tp = { x: drag.port.x, y: drag.port.y };
+    mWatch(drag.d, p, drag.port);
     return render();
   }
   if (drag.type === 'marq') {
@@ -1697,6 +1944,39 @@ function finishGhost(D, p) {
   if (mode === 'cut' || wire) showSuggest();
 }
 
+// Arrow to arrow: the outputs of the left one (in its direction) go to the inputs of the other, port j to port j.
+function bundleArrows(d, A, B) {
+  const aOut = (B.c > A.c) !== (A.v === '<') || B.c === A.c;
+  const src = aOut ? A : B, dst = aOut ? B : A;
+  const so = ZX.matSides(d, src).outSlots, si = ZX.matSides(d, dst).inSlots;
+  const k = Math.max(1, Math.min(src.mat ? src.mat.length : 1, dst.mat && dst.mat[0] ? dst.mat[0].length : 1));
+  // the ports this replaces are freed first
+  d.edges = d.edges.filter((e) => !so.concat(si).some((x) => x && x.e === e && ((e.a === src.id && e.b === dst.id) || (e.a === dst.id && e.b === src.id))));
+  for (let j = 0; j < k; j++) {
+    const id = ZX.newId('e');
+    d.edges.push({ id, a: src.id, b: dst.id, o: '' });
+    ZX.setPort(src, 'out', j, id); ZX.setPort(dst, 'in', j, id);
+  }
+  const ka = src.mat ? src.mat.length : k, kb = dst.mat && dst.mat[0] ? dst.mat[0].length : k;
+  if (ka !== kb) toast(`${src.label || 'A'} has ${ka} outputs but ${dst.label || 'B'} has ${kb} inputs`);
+}
+// Wire tool near a matrix arrow: remember which arrow (ports grow) and which port is aimed at.
+// Returns true when that changed.
+function mWatch(d0, q, port) {
+  let best = null, bd = 64;
+  (d0 ? [d0] : doc.diagrams).forEach((d) => d.nodes.forEach((n) => {
+    if (n.t !== 'M') return;
+    const p = pos(d, n), dist = Math.hypot(Math.max(0, Math.abs(q.x - p.x) - M_PORT), Math.max(0, Math.abs(q.y - p.y) - 20));
+    if (dist < bd) { bd = dist; best = { d, n }; }
+  }));
+  const id = best ? best.n.id : null;
+  let hot = port || null;
+  if (!hot && best && Math.abs(q.x - pos(best.d, best.n).x) > M_BAR - 6) hot = pickPort(best.d, best.n, q);
+  const was = JSON.stringify([mNear && mNear.id, mHot && [mHot.id, mHot.side, mHot.j]]);
+  if (id !== (mNear && mNear.id)) mNear = id ? { id, t0: performance.now() } : null;
+  mHot = hot && id === hot.id ? hot : null;
+  return was !== JSON.stringify([mNear && mNear.id, mHot && [mHot.id, mHot.side, mHot.j]]);
+}
 function finishEdge(D) {
   const d = D.d, t = D.tgt;
   const from = D.from ? { r: D.from.r, c: D.from.c } : D.fromCell;
@@ -1718,13 +1998,13 @@ function finishEdge(D) {
       return fanTo(d, srcs, D.from || D.fromCell, D.shift);
     }
     if (D.from) {
-      if (P && P.n !== D.from) { wirePend = null; return linkChain(d, [P.n, D.from]); }
-      wirePend = P && P.n === D.from ? null : { d, n: D.from, tp: null };
+      if (P && P.n !== D.from) { wirePend = null; return linkChain(d, [P.n, D.from], { start: P.port, end: D.startPort }); }
+      wirePend = P && P.n === D.from ? null : { d, n: D.from, tp: null, port: D.startPort };
       if (wirePend) toast('Click another node or cell to connect');
       return render();
     }
     wirePend = null;
-    if (P) return linkChain(d, [P.n, D.fromCell]);
+    if (P) return linkChain(d, [P.n, D.fromCell], { start: P.port });
     if (D.newDiagram && !d.nodes.length) doc.diagrams = doc.diagrams.filter((x) => x !== d);
     return render();
   }
@@ -1733,7 +2013,7 @@ function finishEdge(D) {
   D.chain.forEach((n) => { if (n !== seq[0]) seq.push(n); });
   const B = t.node || at(d, to.r, to.c) || to;
   if (seq[seq.length - 1] !== B) seq.push(B);
-  linkChain(d, seq);
+  linkChain(d, seq, { start: D.startPort, end: t.node && t.node.t === 'M' ? D.port : null });
 }
 // wire consecutive items of seq (nodes, or {r,c} cells that become wire points).
 // A plain two-point wire is always added; a pass-through chain skips pairs that are already wired.
@@ -1754,7 +2034,8 @@ function fanTo(d, srcs, target, keep) {
   toast(made ? `Connected ${made} wire${made === 1 ? '' : 's'}${keep ? ' — Shift-click another target, or Esc' : ''}` : 'Already connected');
 }
 let fanTp = null;   // pointer cell while several sources wait for a target (ghost lines)
-function linkChain(d, seq) {
+function linkChain(d, seq, ports) {
+  ports = ports || {};
   mutate(() => {
     const ns = seq.map((x) => {
       if (x.id) return x;
@@ -1766,10 +2047,16 @@ function linkChain(d, seq) {
       const A = ns[i], B = ns[i + 1];
       if (A === B) continue;
       if (ns.length > 2 && d.edges.some((e) => (e.a === A.id && e.b === B.id) || (e.a === B.id && e.b === A.id))) continue;
-      d.edges.push({ id: ZX.newId('e'), a: A.id, b: B.id, o: '' });
+      if (A.t === 'M' && B.t === 'M') { bundleArrows(d, A, B); continue; }
+      const eid = ZX.newId('e');
+      d.edges.push({ id: eid, a: A.id, b: B.id, o: '' });
+      // a wire dropped on (or started from) a port of a matrix arrow keeps that port
+      if (i === 0 && A.t === 'M' && ports.start && ports.start.id === A.id) ZX.setPort(A, ports.start.side, ports.start.j, eid);
+      if (i === ns.length - 2 && B.t === 'M' && ports.end && ports.end.id === B.id) ZX.setPort(B, ports.end.side, ports.end.j, eid);
     }
     sel.clear();
   });
+  mNear = mHot = null;
 }
 
 function pinchState() { const [a, b] = [...pointers.values()]; return { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
@@ -1849,6 +2136,7 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.altKey && /^Digit[1-9]$/.test(e.code)) { e.preventDefault(); return switchTab(Math.min(+e.code.slice(5), ws.tabs.length) - 1); }
   if (e.altKey && e.code === 'KeyN') { e.preventDefault(); return addTab(); }
+  if (e.shiftKey && k.length === 1 && runKey('shift+' + k)) { e.preventDefault(); return; }
   if (e.shiftKey && k === 'p') { e.preventDefault(); return startShow(); }
   if (e.shiftKey && k === keys.curve) { e.preventDefault(); return toggleCurve(true); }
   if (runKey(k)) e.preventDefault();
@@ -2237,13 +2525,32 @@ function tkPath(dStr) {   // the wire paths only use M, L and C
   return out;
 }
 // One diagram → { svg (inner markup), tk (TikZ), w, h } in px, origin at its top-left
+// Matrix arrow for image / TikZ export: the shape of \zxMat in zxdiagram.sty (9mm bar, chevron, labels)
+function drawMArrow(n, p, w) {
+  const fl = n.v === '<' ? -1 : 1, k = PX, bw = 1.3 * PTPX, ML = ZX.matLabels(n);
+  const pts = [[-1.15, 1.2], [0.25, 1.2], [1.35, 0], [0.25, -1.2], [-1.15, -1.2], [-0.05, 0]].map(([x, y]) => [p.x + fl * x * k, p.y - y * k]);
+  const svg = [`<path d="M${(p.x - w / 2).toFixed(2)} ${p.y.toFixed(2)}H${(p.x + w / 2).toFixed(2)}" stroke="#000" stroke-width="${bw.toFixed(2)}"/>`,
+    `<path d="M${pts.map((q) => q[0].toFixed(2) + ' ' + q[1].toFixed(2)).join('L')}Z" fill="#a6a6a6" stroke="#000" stroke-width="${(0.6 * PTPX).toFixed(2)}" stroke-linejoin="miter"/>`];
+  const tk = [`\\draw[line width=1.3pt] ${tkP(p.x - w / 2, p.y)} -- ${tkP(p.x + w / 2, p.y)};`,
+    `\\filldraw[fill=black!35, line width=.6pt] ${pts.map((q) => tkP(q[0], q[1])).join(' -- ')} -- cycle;`];
+  const lab = (t, x, y) => {
+    if (!t) return;
+    const b = mjBox(t, 7);
+    svg.push(mjPlace(b, x - b.w / 2, y - b.h));
+    tk.push(`\\node[above, inner sep=.4pt, font=\\scriptsize] at ${tkP(x, y)} {$${t}$};`);
+  };
+  lab(n.label, p.x, p.y - 1.3 * k);
+  lab(fl > 0 ? ML.lin : ML.lout, p.x - 0.38 * w, p.y - 0.45 * k);
+  lab(fl > 0 ? ML.lout : ML.lin, p.x + 0.38 * w, p.y - 0.45 * k);
+  return { svg: svg.join(''), tk: tk.join(' ') };
+}
 function drawDiagram(d) {
   const o = ZX.splitOpts(d.opts || '');
   const get = (k) => { const t = o.find((x) => x.startsWith(k)); return t ? lenMM(t.split('=')[1]) : null; };
   let colSep = get('column sep'), rowSep = get('row sep');
   const explicit = colSep != null || rowSep != null || o.includes('circuit');
   if (o.includes('circuit')) { colSep = colSep ?? 4; rowSep = rowSep ?? 4; }
-  const wireOnly = !d.nodes.some((n) => n.t === 'Z' || n.t === 'X' || n.t === 'H');
+  const wireOnly = !d.nodes.some((n) => n.t === 'Z' || n.t === 'X' || n.t === 'H' || n.t === 'M');
   colSep = colSep ?? (wireOnly ? 12 : 3.2); rowSep = rowSep ?? 2.8;
   const spider = explicit ? 2 : 2.6, pad = explicit ? 0 : 2.6;
   const LW = 0.5 * PTPX;
@@ -2252,6 +2559,7 @@ function drawDiagram(d) {
   d.nodes.forEach((n) => {
     if (n.t === 'N' || n.t === 'P') return box.set(n.id, { w: 0, h: pad });
     if (n.t === 'H') return box.set(n.id, { w: 1.7, h: 1.7 });
+    if (n.t === 'M') return box.set(n.id, { w: 9, h: 2.6, mat: true });
     if (n.t === 'T') { const b = mjBox(DOTS.test((n.label || '').trim()) ? n.label : n.label || '\\cdot', 10); return box.set(n.id, { w: b.w / PX, h: b.h / PX, lab: b }); }
     if (n.cmd === 'Ctrl' && !n.label) return box.set(n.id, { w: 1.13, h: 1.13, ctrl: true });
     if (n.cmd === 'Not' && !n.label) return box.set(n.id, { w: 2.6, h: 2.6, not: true });
@@ -2273,14 +2581,18 @@ function drawDiagram(d) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   const grow = (x0, y0, x1, y1) => { minX = Math.min(minX, x0); minY = Math.min(minY, y0); maxX = Math.max(maxX, x1); maxY = Math.max(maxY, y1); };
   const byId = new Map(d.nodes.map((n) => [n.id, n]));
-  const spread = ZX.spreadOpts(d);   // same bends as the LaTeX export
+  const bun = ZX.matBundles(d);
+  const spread = ZX.spreadOpts({ edges: d.edges.filter((e) => !bun.has(e.id)) });   // same bends as the LaTeX export
   d.edges.forEach((e0) => {
     const e = spread.has(e0.id) ? Object.assign({}, e0, { o: spread.get(e0.id) }) : e0;
-    const A = byId.get(e.a), Bn = byId.get(e.b);
-    if (!A || !Bn) return;
+    const A = byId.get(e.a), Bn = byId.get(e.b), bu = bun.get(e.id);
+    if (!A || !Bn || (bu && !bu.lead)) return;
+    mTipHalf = 4.5 * PX;
     const g = rawGeom(d, e, A, Bn, pos);
-    W.push(`<path d="${g.d}" fill="none" stroke="#000" stroke-width="${LW.toFixed(2)}" stroke-linecap="round"/>`);
-    TW.push(`\\draw ${tkPath(g.d)};`);
+    mTipHalf = 0;
+    const lw = bu ? 1.3 * PTPX : LW;   // arrow → arrow: one bold wire
+    W.push(`<path d="${g.d}" fill="none" stroke="#000" stroke-width="${lw.toFixed(2)}" stroke-linecap="${bu ? 'butt' : 'round'}"/>`);
+    TW.push(bu ? `\\draw[line width=1.3pt] ${tkPath(g.d)};` : `\\draw ${tkPath(g.d)};`);
     (g.pts || []).forEach((p) => grow(p.x, p.y, p.x, p.y));
     if (g.h) { const s = 1.7 * PX; N.push(`<rect x="${(g.m.x - s / 2).toFixed(2)}" y="${(g.m.y - s / 2).toFixed(2)}" width="${s.toFixed(2)}" height="${s.toFixed(2)}" fill="#ffffbe" stroke="#000" stroke-width="${LW.toFixed(2)}"/>`); TN.push(`\\draw[fill=zxH] ${tkP(g.m.x - s / 2, g.m.y - s / 2)} rectangle ${tkP(g.m.x + s / 2, g.m.y + s / 2)};`); }
   });
@@ -2289,6 +2601,7 @@ function drawDiagram(d) {
     grow(p.x - w / 2, p.y - h / 2, p.x + w / 2, p.y + h / 2);
     if (n.t === 'N' || n.t === 'P') return;
     const stroke = `stroke="#000" stroke-width="${LW.toFixed(2)}"`;
+    if (b.mat) { const r = drawMArrow(n, p, w); N.push(r.svg); TN.push(r.tk); return; }
     if (n.t === 'H') { N.push(`<rect x="${(p.x - w / 2).toFixed(2)}" y="${(p.y - h / 2).toFixed(2)}" width="${w.toFixed(2)}" height="${h.toFixed(2)}" fill="#ffffbe" ${stroke}/>`); TN.push(`\\draw[fill=zxH] ${tkP(p.x - w / 2, p.y - h / 2)} rectangle ${tkP(p.x + w / 2, p.y + h / 2)};`); return; }
     if (n.t === 'T') { N.push(mjPlace(b.lab, p.x - b.lab.w / 2, p.y - b.lab.h / 2)); TN.push(`\\node[inner sep=0pt] at ${tkP(p.x, p.y)} {$${DOTS.test((n.label || '').trim()) ? n.label.trim() : n.label || '\\cdot'}$};`); return; }
     if (b.ctrl) { N.push(`<circle cx="${p.x.toFixed(2)}" cy="${p.y.toFixed(2)}" r="${(w / 2).toFixed(2)}" fill="#000"/>`); TN.push(`\\fill ${tkP(p.x, p.y)} circle[radius=${tkN(w / 2 * 0.75)}pt];`); return; }
@@ -2534,8 +2847,10 @@ const ACTIONS = [
   ['N', 'Tools', 'Wire point / boundary', 'n', () => setTool('N')],
   ['P', 'Tools', 'Dot — a routing point for wires (bends, swaps, crossings); exported as an empty \\zxN', 'd', () => setTool('P')],
   ['T', 'Tools', 'Text cell (⋮, labels) — ignored when computing', 't', () => setTool('T')],
+  ['M', 'Tools', 'Matrix arrow — a phase-free Z/X block given by a 0/1 matrix A (type its entries in the panel)', 'a', () => setTool('M')],
   ['edge', 'Tools', 'Wire — drag between nodes or empty cells', 'e', () => setTool('edge')],
   ['swap', 'Edit', 'Swap Z ↔ X colour of the selection', 'c', () => swapColour()],
+  ['matx', 'Edit', 'Matrix arrow ⇄ Z/X spiders: expand the selected arrow, or fold the selected (or any found) phase-free Z–X block into one', 'shift+a', () => toggleMat()],
   ['curve', 'Edit', 'Cycle the selected wire(s) through every curve style (Shift+S: back)', 's', () => toggleCurve()],
   ['panel', 'Edit', 'Open the edit panel for the selection', 'enter', () => { if (sel.size) openInsp(true); }],
   ['delete', 'Edit', 'Delete the selection (a node with one wire in and one out leaves the wire)', 'backspace', () => deleteSel()],
@@ -2609,7 +2924,9 @@ const RULE_LIB = [
   ['(π)', 'π-commutation', 'π phases of the other colour pass through a spider and flip its phase.', String.raw`\zx{\zxN{} \rar & \zxX{\pi} \ar[dr, s] & & \zxN{} \\ & \vdots & \zxZ{\alpha} \ar[ur, s] \ar[dr, s] & \vdots \\ \zxN{} \rar & \zxX{\pi} \ar[ur, s] & & \zxN{}} \stackrel{\mathbf{(\pi)}}{\propto} \zx{\zxN{} \ar[dr, s] & & \zxX{\pi} \rar & \zxN{} \\ \vdots & \zxZ{-\alpha} \ar[ur, s] \ar[dr, s] & \vdots & \\ \zxN{} \ar[ur, s] & & \zxX{\pi} \rar & \zxN{}}`],
   ['(sc)', 'Strong complementarity', 'A Z–X pair turns into a fully connected bipartite block.', String.raw`\zx{\zxN{} \ar[dr, s] & & & \zxN{} \\ \vdots & \zxX{} \rar & \zxZ{} \ar[ur, s] \ar[dr, s] & \vdots \\ \zxN{} \ar[ur, s] & & & \zxN{}} \stackrel{\mathbf{(sc)}}{\propto} \zx{\zxN{} \rar & \zxZ{} \rar \ar[ddr] & \zxX{} \rar & \zxN{} \\ \vdots & & & \vdots \\ \zxN{} \rar & \zxZ{} \rar \ar[uur] & \zxX{} \rar & \zxN{}}`],
   ['(sc)', 'Copy rule', 'A phase-free state is copied through a spider of the other colour.', String.raw`\zx{& & \zxN{} \\ \zxX{} \rar & \zxZ{} \ar[ur, s] \ar[dr, s] & \\ & & \zxN{}} \stackrel{\mathbf{(sc)}}{\propto} \zx{\zxX{} \rar & \zxN{} \\ & \\ \zxX{} \rar & \zxN{}}`],
+  ['', 'Matrix arrow', 'A 0/1 matrix A (m×n) drawn as one arrow: input j (a Z spider) is wired to output i (an X spider) exactly when A_ij = 1. Tool A places one; ⇧A expands or folds it.', String.raw`\zx{\zxN{} \ar[dr] & & \zxN{} \\ \zxN{} \rar & \zxMat[1 0 1; 1 1 0]{3}{A}{2} \ar[ur] \ar[dr] & \\ \zxN{} \ar[ur] & & \zxN{}} = \zx{\zxN{} \rar & \zxZ{} \rar \ar[dr] & \zxX{} \rar & \zxN{} \\ \zxN{} \rar & \zxZ{} \rar & \zxX{} \rar & \zxN{} \\ \zxN{} \rar & \zxZ{} \ar[uur] & & }`],
   ['(eu)', 'Euler decomposition', 'A Hadamard is three π/2 rotations.', String.raw`\zx{\zxN{} \rar & \zxH{} \rar & \zxN{}} \stackrel{\mathbf{(eu)}}{\propto} \zx{\zxN{} \rar & \zxFracZ{\pi}{2} \rar & \zxFracX{\pi}{2} \rar & \zxFracZ{\pi}{2} \rar & \zxN{}}`],
+  ['(sp)', '0-legged spiders', 'A phase-free spider with no legs is a scalar (2); both colours agree, and it equals the empty diagram up to a scalar.', String.raw`\zx{\zxZ{}} = \zx{\zxX{}} \propto \zx{}`],
   ['(ho)', 'Hopf law', 'Two wires between a Z and an X spider disconnect (up to a scalar ½).', String.raw`\zx{\zxN{} \rar & \zxZ{} \ar[r, bend left] \ar[r, bend right] & \zxX{} \rar & \zxN{}} \stackrel{\mathbf{(ho)}}{\propto} \zx{\zxN{} \rar & \zxZ{} & \zxX{} \rar & \zxN{}}`],
   ['(sp)', 'Phases add', 'Two π states fuse; phases add modulo 2π.', String.raw`\zx{\zxZ{\pi} \rar & \zxZ{\pi} \rar & \zxN{}} \stackrel{\mathbf{(sp)}}{=} \zx{\zxZ{} \rar & \zxN{}}`],
   ['', 'Phase through CNOT control', 'A Z phase commutes through the control of a CNOT.', String.raw`\zx{\zxN{} \rar & \zxZ{\alpha} \rar & \zxZ{} \rar \dar & \zxN{} \\ \zxN{} \ar[rr] & & \zxX{} \rar & \zxN{}} = \zx{\zxN{} \rar & \zxZ{} \rar \dar & \zxZ{\alpha} \rar & \zxN{} \\ \zxN{} \rar & \zxX{} \ar[rr] & & \zxN{}}`],
@@ -2637,8 +2954,10 @@ function renderMini(src, maxW, maxH) {
       const g = edgeGeom(d, e, A, B);
       S.push(`<path class="wire-p" d="${g.d}"/>${g.h ? `<rect class="hbox" x="${g.m.x - 7}" y="${g.m.y - 7}" width="14" height="14"/>` : ''}`);
     });
-    d.nodes.forEach((n) => N.push(nodeHTML(n, pos(d, n), false)));
+    d.nodes.forEach((n) => N.push(nodeHTML(n, pos(d, n), false, null, d)));
   });
+  // Empty diagram: dashed placeholder box, as on the canvas.
+  diagrams.forEach((d, i) => { if (!d.nodes.length) { const r = rects[i]; N.push(`<div class="mini-empty" style="left:${r.x0 + 6}px;top:${r.y0 + 6}px;width:${r.x1 - r.x0 - 12}px;height:${r.y1 - r.y0 - 12}px"></div>`); } });
   for (let i = 0; i + 1 < rects.length; i++) T.push(`<div class="sep" style="left:${(rects[i].x1 + rects[i + 1].x0) / 2}px;top:0">${tex(seps[i] == null ? '=' : seps[i])}</div>`);
   const y0 = Math.min(...rects.map((r) => r.y0)) - 8, y1 = Math.max(...rects.map((r) => r.y1)) + 8;
   const W = x - G, H = y1 - y0, k = Math.min(1, maxW / W, maxH / H);
@@ -2726,7 +3045,7 @@ function simLane(lane) {
   if (SIM.off) return null;
   if (SIM[lane]) return SIM[lane];
   let w;
-  try { w = new Worker('zx-worker.js?v=1'); } catch (_) { SIM.off = true; return null; }
+  try { w = new Worker('zx-worker.js?v=5'); } catch (_) { SIM.off = true; return null; }
   w.onmessage = (e) => {
     const m = e.data, p = m && SIM.pend.get(m.id);
     if (!p) return;
@@ -2772,11 +3091,11 @@ const busyHTML = (msg, cancel = 'sim-cancel') => `<div class="mbusy"><span class
 // ---------- compute: step-by-step simplification and matrices (engine: zx-sim.js) ----------
 const SIM_RULES = 'spider fusion (sp), identity (id), Hadamard cancel (hh), colour change (cc), Hopf (ho), copy and strong complementarity (sc), π-commutation (π)';
 let simCache = null;   // { i, sig, res } for the open Simplify popover
-function runSimplify(d) {
-  return simJob('simplify', [d]).catch((e) => { if (e.cancelled) throw e; markErr(e.nodes); return { steps: [], error: e.message, nodes: e.nodes }; });
+function runSimplify(d, opt) {
+  return simJob('simplify', opt ? [d, opt] : [d]).catch((e) => { if (e.cancelled) throw e; markErr(e.nodes); return { steps: [], error: e.message, nodes: e.nodes }; });
 }
 const relChip = (rel) => (rel === '=' ? '=' : '∝');
-function openSimplify(i, fromEl, ready) {
+function openSimplify(i, fromEl, ready, opt) {
   if (doc.diagrams[i] && !doc.diagrams[i].nodes.length) i = doc.diagrams.findIndex((x) => x.nodes.length);
   const d = doc.diagrams[i];
   if (!d || !d.nodes.length) return toast('Draw or import a diagram first');
@@ -2787,7 +3106,8 @@ function openSimplify(i, fromEl, ready) {
     openPop(`<div class="wraphead">Simplify ${esc(nameOf(i))}</div>${busyHTML('Simplifying — every step is being checked…')}`, anchor);
     pop.dataset.kind = 'simp'; pop.dataset.i = i;
     const sig = JSON.stringify(shape(d));
-    runSimplify(d).then((res) => {
+    runSimplify(d, opt).then((res) => {
+      if (res) res._opt = opt;
       if (pop.hidden || pop.dataset.kind !== 'simp' || +pop.dataset.i !== i || !doc.diagrams[i] || JSON.stringify(shape(doc.diagrams[i])) !== sig) return;
       openSimplify(i, fromEl, res);
     }, () => {});
@@ -2804,6 +3124,7 @@ function openSimplify(i, fromEl, ready) {
     <div class="row simacts">
       ${res.steps.length ? `<button class="btn primary sm" data-s="simp-ins">Insert steps after it</button><button class="btn sm" data-s="simp-new">Open in a new page</button>` : ''}
       ${doc.diagrams.length > 1 ? `<button class="linkbtn" data-s="simp-all">Simplify all ${doc.diagrams.length} diagrams</button>` : ''}
+      ${res.parity && !res._opt ? `<button class="linkbtn" data-s="simp-pnf" title="It is a parity map: rewrite it to parity normal form">Parity normal form</button>` : ''}
       <span class="grow"></span><button class="linkbtn" data-s="simp-mat">Matrix</button>
     </div>`, anchor);
   render();
@@ -3421,7 +3742,7 @@ function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.ad
 function initChrome() {
   $('#btnTidy').innerHTML = I.tidy; $('#btnPreview').innerHTML = I.eye; $('#btnHelp').innerHTML = I.help; $('#btnNew').innerHTML = I.folder;
   $('#btnImport .bi').innerHTML = I.up; $('#btnExport .bi').innerHTML = I.down;
-  $('.tool[data-tool="select"] .ti').innerHTML = I.pointer; $('.tool[data-tool="T"] .ti').innerHTML = I.text; $('.tool[data-tool="P"] .ti').innerHTML = I.dot; $('.tool[data-tool="edge"] .ti').innerHTML = I.wire;
+  $('.tool[data-tool="select"] .ti').innerHTML = I.pointer; $('.tool[data-tool="T"] .ti').innerHTML = I.text; $('.tool[data-tool="P"] .ti').innerHTML = I.dot; $('.tool[data-tool="M"] .ti').innerHTML = I.marrow; $('.tool[data-tool="edge"] .ti').innerHTML = I.wire;
   $('#dUndo').innerHTML = I.undo; $('#dRedo').innerHTML = I.redo; $('#dDel').innerHTML = I.trash;
   $('#btnTidy').onclick = tidyAll;
   $('#btnSimp .bi').innerHTML = I.wand; $('#btnMat .bi').innerHTML = I.matrix; $('#btnCheck .bi').innerHTML = I.okc;
@@ -3584,7 +3905,8 @@ function diagStats(d) {
   const io = ioMap(d), count = { Z: 0, X: 0, H: 0 };
   let ins = 0, outs = 0, t = 0, nonCl = 0, sym = 0, bad = 0;
   io.forEach((v) => (v[0] === 'i' ? ins++ : outs++));
-  d.nodes.forEach((n) => {
+  let src = d; try { src = ZX.expandMats(d); } catch (_) {}   // matrix arrows count as their spiders
+  src.nodes.forEach((n) => {
     if (n.t === 'H') count.H++;
     if (n.t !== 'Z' && n.t !== 'X') return;
     count[n.t]++;

@@ -72,6 +72,14 @@
       n.t = 'H'; n.v = v;
     } else if (base === 'Ctrl') {
       n.t = 'Z'; n.cmd = 'Ctrl'; n.v = v; n.label = args[0] || '';
+    } else if (base === 'Mat') {
+      // matrix arrow: \zxMat[1 0 1; 1 1 0]{n}{A}{m}; \zxMat< points left
+      n.t = 'M'; n.v = v.includes('<') ? '<' : '';
+      n.lin = args[0] || ''; n.label = args[1] || ''; n.lout = args[2] || '';
+      const pm = st ? parseMatrix(st) : null;
+      n.mat = pm && !pm.err ? pm.rows : null; n.st = '';
+      if (n.mat && n.lin === String(n.mat[0].length)) n.lin = '';      // the size: shown automatically
+      if (n.mat && n.lout === String(n.mat.length)) n.lout = '';
     } else if (base === 'Not') {
       n.t = 'X'; n.cmd = 'Not'; n.v = v; n.label = args[0] || '';
     } else {
@@ -100,7 +108,7 @@
         ws();
         if (s[i] === '[') { const g = readGroup(s, i, '[', ']'); st = g[0]; i = g[1]; }
         const args = [];
-        const nargs = base.startsWith('Frac') ? 2 : 1;
+        const nargs = base.startsWith('Frac') ? 2 : base === 'Mat' ? 3 : 1;
         for (let a = 0; a < nargs; a++) {
           ws();
           if (s[i] === '{') { const g = readGroup(s, i, '{', '}'); args.push(g[0].trim()); i = g[1]; }
@@ -150,7 +158,7 @@
       if (!t) { t = Object.assign(blankNode(), { r, c, cmd: 'N' }); d.nodes.push(t); grid.set(key, t); }
       d.edges.push({ id: newId('e'), a: a.from.id, b: t.id, o: a.opts });
     });
-    return d;
+    return unbundle(d);
   }
 
   function cleanSep(s) {
@@ -230,12 +238,15 @@
     return { neg, a: g1[0], b: g2[0] };
   }
 
-  function nodeTex(n) {
+  // in / out labels: what the user typed, else the size of A
+  const matLabels = (n) => ({ lin: n.lin || (n.mat && n.mat[0] ? String(n.mat[0].length) : ''), lout: n.lout || (n.mat ? String(n.mat.length) : '') });
+  function nodeTex(n, mat, hide) {
     const st = n.st ? `[${n.st}]` : '';
     const v = n.v || '';
     if (n.t === 'T') return n.label || '';
     if (n.t === 'P') return '\\zxN{}';   // Dot: a routing point, invisible in LaTeX
     if (n.t === 'N') return `\\zx${n.cmd || 'N'}${v}${st}{}`;
+    if (n.t === 'M') { const L = matLabels(n), m = mat || n.mat; if (hide && hide.in && !n.lin) L.lin = ''; if (hide && hide.out && !n.lout) L.lout = ''; return `\\zxMat${n.v === '<' ? '<' : ''}${m ? `[${matText(m)}]` : ''}{${L.lin}}{${n.label || ''}}{${L.lout}}`; }
     if (n.t === 'H') return `\\zxH${v}${st}{}`;
     if (n.cmd === 'Ctrl' || n.cmd === 'Not') return `\\zx${n.cmd}${v}${st}{${n.label || ''}}`;
     const L = (n.label || '').trim();
@@ -292,12 +303,17 @@
     const R = b.r1 - b.r0 + 1, C = b.c1 - b.c0 + 1;
     const cells = Array.from({ length: R }, () => Array(C).fill(''));
     const byId = new Map(d.nodes.map((n) => [n.id, n]));
-    d.nodes.forEach((n) => { cells[n.r - b.r0][n.c - b.c0] = nodeTex(n); });
-    const spread = spreadOpts(d);
+    const bun = matBundles(d);
+    // a bundled side (arrow → arrow) carries no size label, as in the book
+    const hideOf = (n) => { const h = { in: false, out: false }; bun.forEach((x) => { if (x.a === n.id) h.out = true; if (x.b === n.id) h.in = true; }); return h; };
+    d.nodes.forEach((n) => { cells[n.r - b.r0][n.c - b.c0] = n.t === 'M' ? nodeTex(n, matForTex(d, n), hideOf(n)) : nodeTex(n); });
+    const spread = spreadOpts({ edges: d.edges.filter((e) => !bun.has(e.id)) });
     d.edges.forEach((e) => {
       const A = byId.get(e.a), B = byId.get(e.b);
       if (!A || !B) return;
-      cells[A.r - b.r0][A.c - b.c0] += ' ' + arrowTex(A, B, spread.has(e.id) ? spread.get(e.id) : e.o);
+      const bu = bun.get(e.id);
+      if (bu && !bu.lead) return;
+      cells[A.r - b.r0][A.c - b.c0] += ' ' + arrowTex(A, B, bu ? 'zxBundle' : spread.has(e.id) ? spread.get(e.id) : e.o);
     });
     const w = Array(C).fill(0);
     cells.forEach((row) => row.forEach((s, j) => { w[j] = Math.max(w[j], s.length); }));
@@ -335,7 +351,312 @@
     return unicodeToTex(out);
   }
 
+  // ---------- matrix arrows (a phase-free Z–X block in normal form, drawn as one bold arrow) ----------
+  // Reads a 0/1 matrix typed almost any way: "1 0 1; 1 1 0", one row per line, "101 110",
+  // "1,0,1 \\ 1,1,0", "a & b \\ c & d", \begin{pmatrix}..\end{pmatrix}, [[1,0,1],[1,1,0]], "A = (...)".
+  // → { rows: [[0|1]] } or { err }
+  function parseMatrix(src) {
+    let s = String(src || '');
+    s = s.replace(/\\(begin|end)\s*\{[a-zA-Z*]*\}/g, ' ').replace(/\\(left|right|big|Big|bigg|Bigg)\b/g, ' ');
+    if (s.includes('=')) s = s.slice(s.lastIndexOf('=') + 1);
+    s = s.replace(/\]\s*,\s*\[/g, ';').replace(/\)\s*,\s*\(/g, ';').replace(/[[\](){}]/g, ' ').replace(/\\(?:cr|newline)\b/g, ';');
+    let rows = s.split(/\\\\|;|\n|\r/).map((r) => r.trim()).filter(Boolean)
+      .map((r) => r.split(/[&,\s]+/).filter(Boolean));
+    if (!rows.length) return { err: 'Type the rows of A, e.g. 1 0 1; 1 1 0' };
+    // a row written without separators: 101
+    rows = rows.map((r) => (r.length === 1 && /^[01]{2,}$/.test(r[0]) ? r[0].split('') : r));
+    // one line of bit strings: "101 110" means two rows
+    if (rows.length === 1 && rows[0].length > 1 && rows[0].every((t) => /^[01]{2,}$/.test(t)) && rows[0].every((t) => t.length === rows[0][0].length)) rows = rows[0].map((t) => t.split(''));
+    const out = [];
+    for (let i = 0; i < rows.length; i++) {
+      const r = [];
+      for (const t of rows[i]) {
+        if (!/^[+-]?\d+$/.test(t)) return { err: `“${t}” is not 0 or 1` };
+        r.push(Math.abs(+t) % 2);
+      }
+      out.push(r);
+    }
+    const w = out[0].length;
+    const bad = out.findIndex((r) => r.length !== w);
+    if (bad > 0) return { err: `Row ${bad + 1} has ${out[bad].length} entries, row 1 has ${w}` };
+    return { rows: out };
+  }
+  const matText = (m) => m.map((r) => r.join(' ')).join('; ');
+
+  // The wires of a matrix arrow, by port. n.pin / n.pout hold edge ids per port (chosen by the user);
+  // other wires take the free ports of their side in top-to-bottom order: a wire to the left goes in,
+  // to the right comes out (mirrored for \zxMat<), a vertical one by its direction.
+  // → { ins, outs: [{ e, o, j }] in port order, inSlots, outSlots: per port {e,o,j} or null (longer than A when overfull), loops }
+  function matSides(d, n) {
+    const byId = new Map(d.nodes.map((m) => [m.id, m]));
+    const flip = n.v === '<', loops = [], att = new Map();
+    d.edges.forEach((e) => {
+      if (e.a !== n.id && e.b !== n.id) return;
+      if (e.a === e.b) return loops.push(e);
+      const o = byId.get(e.a === n.id ? e.b : e.a);
+      if (o) att.set(e.id, { e, o });
+    });
+    const R = n.mat ? n.mat.length : 0, C = n.mat && n.mat[0] ? n.mat[0].length : 0;
+    const used = new Set();
+    const pinned = (list, k) => {
+      const S = Array(k).fill(null);
+      (list || []).forEach((id, j) => { const x = att.get(id); if (j < k && x && !used.has(id)) { S[j] = x; used.add(id); } });
+      return S;
+    };
+    const kIn = Math.max(C, (n.pin || []).length), kOut = Math.max(R, (n.pout || []).length);
+    const SI = pinned(n.pin, kIn), SO = pinned(n.pout, kOut);
+    const free = [...att.values()].filter((x) => !used.has(x.e.id));
+    const ord = (a, b) => a.o.r - b.o.r || a.o.c - b.o.c;
+    const geoIn = free.filter((x) => (x.o.c < n.c || (x.o.c === n.c && x.e.b === n.id)) !== flip).sort(ord);
+    const geoOut = free.filter((x) => !geoIn.includes(x)).sort(ord);
+    const fill = (S, list, k) => {
+      list.forEach((x) => { const j = S.findIndex((y, i) => !y && i < k); if (j >= 0) S[j] = x; else S.push(x); });
+      while (S.length > Math.max(k, 0) && !S[S.length - 1]) S.pop();
+      return S.map((x, j) => (x ? Object.assign({}, x, { j }) : null));
+    };
+    const inSlots = fill(SI, geoIn, C), outSlots = fill(SO, geoOut, R);
+    return { ins: inSlots.filter(Boolean), outs: outSlots.filter(Boolean), inSlots, outSlots, loops };
+  }
+  // Size of A against the wires drawn: ok, or a message for the user.
+  function matInfo(d, n) {
+    const s = matSides(d, n), m = n.mat;
+    const rows = m ? m.length : 0, cols = m && m[0] ? m[0].length : 0;
+    const info = { rows, cols, nin: s.ins.length, nout: s.outs.length, ok: true, msg: '' };
+    const side = (k, slots, w) => {
+      const have = slots.filter(Boolean).length;
+      if (!have) return '';
+      if (slots.length > k) return `${have} ${w} wires, but A has ${k} ${w === 'input' ? 'column' : 'row'}${k === 1 ? '' : 's'}`;
+      if (have < k) return `${have} of ${k} ${w} wire${k === 1 ? '' : 's'} connected`;
+      return '';
+    };
+    if (!m) { info.ok = false; info.msg = 'Enter the entries of the matrix'; }
+    else if (s.loops.length) { info.ok = false; info.msg = 'A self-loop on a matrix arrow has no meaning'; }
+    else { const w = side(cols, s.inSlots, 'input') || side(rows, s.outSlots, 'output'); if (w) { info.ok = false; info.msg = w; } }
+    info.openIn = !s.ins.length; info.openOut = !s.outs.length;
+    return info;
+  }
+  // The entries as LaTeX will read them back: re-imported wires take their ports top to bottom,
+  // so a custom port order is written as permuted rows / columns (same meaning).
+  function matForTex(d, n) {
+    if (!n.mat) return null;
+    const info = matInfo(d, n);
+    if (!info.ok) return n.mat;
+    const s = matSides(d, n), ord = (a, b) => a.o.r - b.o.r || a.o.c - b.o.c, bun = matBundles(d);
+    const bIn = s.ins.some((x) => bun.has(x.e.id)), bOut = s.outs.some((x) => bun.has(x.e.id));   // re-imported bundles keep port order
+    const gi = info.openIn || bIn ? null : s.ins.slice().sort(ord).map((x) => x.j);     // geometric rank → port
+    const go = info.openOut || bOut ? null : s.outs.slice().sort(ord).map((x) => x.j);
+    return (go || n.mat.map((_, i) => i)).map((i) => (gi || n.mat[0].map((_, j) => j)).map((j) => n.mat[i][j]));
+  }
+  // Arrow-to-arrow wiring where output j of one meets input j of the other, every port used:
+  // drawn as one bold wire and written as one \ar[.., zxBundle]. → Map edgeId → { lead, a, b, k }
+  function matBundles(d) {
+    const out = new Map(), M = d.nodes.filter((n) => n.t === 'M');
+    if (M.length < 2) return out;
+    const sides = new Map(M.map((n) => [n.id, matSides(d, n)]));
+    const groups = new Map();
+    d.edges.forEach((e) => {
+      const A = sides.get(e.a), B = sides.get(e.b);
+      if (!A || !B || e.a === e.b || (e.o || '').trim()) return;
+      const key = [e.a, e.b].sort().join('|');
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(e);
+    });
+    groups.forEach((es, key) => {
+      const [x, y] = key.split('|');
+      // which of the two gives outputs on these wires
+      for (const [a, b] of [[x, y], [y, x]]) {
+        const so = sides.get(a).outSlots, si = sides.get(b).inSlots;
+        if (es.length < 2 || so.length !== es.length || si.length !== es.length) continue;
+        if (!es.every((e) => { const i = so.findIndex((s) => s && s.e === e), j = si.findIndex((s) => s && s.e === e); return i >= 0 && i === j; })) continue;
+        const ordered = so.map((s) => s.e);
+        ordered.forEach((e, j) => out.set(e.id, { lead: j === 0, a, b, k: es.length, j }));
+        break;
+      }
+    });
+    return out;
+  }
+  // \ar[.., zxBundle] between two arrows (from LaTeX) → one wire per port, output j to input j
+  function unbundle(d) {
+    const byId = new Map(d.nodes.map((n) => [n.id, n]));
+    d.edges.slice().forEach((e) => {
+      const toks = splitOpts(e.o || '');
+      if (!toks.includes('zxBundle')) return;
+      const A = byId.get(e.a), B = byId.get(e.b);
+      if (!A || !B || A.t !== 'M' || B.t !== 'M') { e.o = toks.filter((t) => t !== 'zxBundle').join(', '); return; }
+      // the source cell is the one whose outputs leave towards the other (left one, unless mirrored)
+      const aOut = (B.c > A.c) !== (A.v === '<');
+      const src = aOut ? A : B, dst = aOut ? B : A;
+      const k = Math.max(1, Math.min(src.mat ? src.mat.length : 1, dst.mat && dst.mat[0] ? dst.mat[0].length : 1));
+      d.edges = d.edges.filter((x) => x !== e);
+      for (let j = 0; j < k; j++) {
+        const id = j ? newId('e') : e.id;
+        d.edges.push({ id, a: e.a, b: e.b, o: '' });
+        setPort(src, 'out', j, id); setPort(dst, 'in', j, id);
+      }
+    });
+    return d;
+  }
+  // Put wire eid on port j of a side ('in' / 'out'); a wire already there gives the port up.
+  function setPort(n, side, j, eid) {
+    n.pin = (n.pin || []).map((x) => (x === eid ? null : x));
+    n.pout = (n.pout || []).map((x) => (x === eid ? null : x));
+    const L = side === 'in' ? n.pin : n.pout;
+    while (L.length <= j) L.push(null);
+    L[j] = eid;
+  }
+
+  // Replace matrix arrow `id` by its Z/X normal form, in place. grid = true: whole cells, opening new columns
+  // (the editor); otherwise fractional positions, nothing else moves (computation). Returns the new nodes.
+  function expandMat(d, id, grid) {
+    const n = d.nodes.find((m) => m.id === id);
+    if (!n || n.t !== 'M') return [];
+    const info = matInfo(d, n);
+    if (!info.ok) { const e = new Error(`Matrix arrow ${n.label || ''}: ${info.msg.toLowerCase()}`); e.nodes = [n.id]; throw e; }
+    const { ins, outs } = matSides(d, n), A = n.mat, R = info.rows, C = info.cols, flip = n.v === '<';
+    const r0 = n.r, c0 = n.c;
+    // column order left → right
+    const cols = flip ? ['oN', 'X', 'Z', 'iN'] : ['iN', 'Z', 'X', 'oN'];
+    const used = cols.filter((k) => (k === 'iN' ? info.openIn : k === 'oN' ? info.openOut : true));
+    const colOf = {};
+    if (grid) {
+      d.nodes.forEach((m) => { if (m.c > c0) m.c += used.length - 1; });
+      used.forEach((k, i) => { colOf[k] = c0 + i; });
+    } else {
+      used.forEach((k, i) => { colOf[k] = c0 + (i - (used.length - 1) / 2) * 0.2; });
+    }
+    d.nodes = d.nodes.filter((m) => m !== n);
+    const taken = new Set(d.nodes.map((m) => m.r + ',' + m.c));
+    // rows: follow the wires when there are any, otherwise stack around the arrow
+    const rowsFor = (k, list, col) => {
+      const out = []; let prev = -Infinity;
+      // follow the wires' rows when they fan out; stack around the arrow when they share a row (arrow → arrow)
+      const follow = list.length && list.every((x, j) => !j || x.o.r > list[j - 1].o.r);
+      for (let j = 0; j < k; j++) {
+        let r = follow ? list[j].o.r : r0 - Math.floor((k - 1) / 2) + j;
+        if (grid) { r = Math.max(Math.round(r), prev + 1); while (taken.has(r + ',' + col)) r++; taken.add(r + ',' + col); }
+        else r = Math.max(r, prev + 0.01);
+        out.push(r); prev = r;
+      }
+      return out;
+    };
+    const mk = (t, r, c, cmd) => ({ id: newId('n'), r, c, t, label: '', cmd: cmd || '', v: '', st: '' });
+    const zr = rowsFor(C, ins, colOf.Z), xr = rowsFor(R, outs, colOf.X);
+    const Z = zr.map((r) => mk('Z', r, colOf.Z)), X = xr.map((r) => mk('X', r, colOf.X));
+    const made = Z.concat(X);
+    const relink = (list, sp) => list.forEach(({ e }, j) => { if (e.a === id) e.a = sp[j].id; else e.b = sp[j].id; });
+    relink(ins, Z); relink(outs, X);
+    if (info.openIn) Z.forEach((z) => { const b = mk('N', z.r, colOf.iN, 'N'); made.push(b); d.edges.push(flip ? { id: newId('e'), a: z.id, b: b.id, o: '' } : { id: newId('e'), a: b.id, b: z.id, o: '' }); });
+    if (info.openOut) X.forEach((x) => { const b = mk('N', x.r, colOf.oN, 'N'); made.push(b); d.edges.push(flip ? { id: newId('e'), a: b.id, b: x.id, o: '' } : { id: newId('e'), a: x.id, b: b.id, o: '' }); });
+    for (let i = 0; i < R; i++) for (let j = 0; j < C; j++) if (A[i][j]) d.edges.push(flip ? { id: newId('e'), a: X[i].id, b: Z[j].id, o: '' } : { id: newId('e'), a: Z[j].id, b: X[i].id, o: '' });
+    d.nodes.push(...made);
+    return made;
+  }
+  // A copy of d with every matrix arrow expanded (for computing).
+  function expandMats(d) {
+    if (!d.nodes.some((n) => n.t === 'M')) return d;
+    const c = Object.assign({}, d, { nodes: d.nodes.map((n) => Object.assign({}, n)), edges: d.edges.map((e) => Object.assign({}, e)) });
+    c.nodes.filter((n) => n.t === 'M').forEach((n) => expandMat(c, n.id, false));
+    return c;
+  }
+
+  // Phase-free Z–X blocks that are exactly a matrix arrow: each spider has one wire leaving the block,
+  // every wire inside joins a Z to an X (no H, no doubles). only: restrict to these node ids.
+  function findMatBlocks(d, only) {
+    const free = (n) => (n.t === 'Z' || n.t === 'X') && !n.cmd && !n.v && (!n.label || /^\s*0?\s*$/.test(n.label)) && (!only || only.has(n.id));
+    const byId = new Map(d.nodes.map((n) => [n.id, n]));
+    const hasH = (e) => splitOpts(e.o || '').includes('H');
+    const taken = new Set(), blocks = [];
+    // a chain of layers (Z X Z X …) splits into one block per Z→X step: first wires with Z left of X,
+    // then the mirrored direction, then any (vertical drawings)
+    const passes = [(z, x) => z.c < x.c, (z, x) => z.c > x.c, () => true];
+    for (const dirOk of passes) {
+      const K = new Map(d.nodes.filter((n) => free(n) && !taken.has(n.id)).map((n) => [n.id, n]));
+      const inner = (e) => {
+        if (e.a === e.b || !K.has(e.a) || !K.has(e.b) || hasH(e)) return false;
+        const A = K.get(e.a), B = K.get(e.b);
+        if (A.t === B.t) return false;
+        return A.t === 'Z' ? dirOk(A, B) : dirOk(B, A);
+      };
+      const adj = new Map([...K.keys()].map((k) => [k, []]));
+      d.edges.forEach((e) => { if (inner(e)) { adj.get(e.a).push(e.b); adj.get(e.b).push(e.a); } });
+      const seen = new Set(), comps = [];
+      for (const k of K.keys()) {
+        if (seen.has(k) || !adj.get(k).length) continue;
+        const comp = [k]; seen.add(k);
+        for (let i = 0; i < comp.length; i++) adj.get(comp[i]).forEach((x) => { if (!seen.has(x)) { seen.add(x); comp.push(x); } });
+        comps.push(comp);
+      }
+      // pieces in the same two columns (one Z column, one X column) belong to one arrow, e.g. an identity row of A;
+      // so do lone spiders there (a zero column or row)
+      const colKey = (comp) => { const zc = new Set(), xc = new Set(); comp.forEach((x) => (K.get(x).t === 'Z' ? zc : xc).add(K.get(x).c)); return zc.size === 1 && xc.size === 1 ? [...zc][0] + '|' + [...xc][0] : null; };
+      const byCols = new Map(), merged = [];
+      comps.forEach((c) => { const key = colKey(c); if (!key) return merged.push(c); if (!byCols.has(key)) { byCols.set(key, c.slice()); merged.push(byCols.get(key)); } else byCols.get(key).push(...c); });
+      byCols.forEach((c, key) => {
+        const [zc, xc] = key.split('|').map(Number);
+        K.forEach((n, id) => { if (!seen.has(id) && !adj.get(id).length && n.c === (n.t === 'Z' ? zc : xc) && d.edges.filter((e) => e.a === id || e.b === id).length === 1) { seen.add(id); c.push(id); } });
+      });
+      for (const comp of merged) {
+        const set = new Set(comp), zs = comp.filter((x) => K.get(x).t === 'Z'), xs = comp.filter((x) => K.get(x).t === 'X');
+        if (!zs.length || !xs.length || (!only && comp.length < 3)) continue;
+        const ext = new Map(), pairs = new Set();
+        let ok = true;
+        d.edges.forEach((e) => {
+          if (!ok || (!set.has(e.a) && !set.has(e.b))) return;
+          if (set.has(e.a) && set.has(e.b)) {
+            if (!inner(e)) { ok = false; return; }
+            const key = [e.a, e.b].sort().join('|');
+            if (pairs.has(key)) ok = false; pairs.add(key);
+            return;
+          }
+          const me = set.has(e.a) ? e.a : e.b;
+          if (ext.has(me)) ok = false; else ext.set(me, e);
+        });
+        if (!ok || comp.some((x) => !ext.has(x))) continue;
+        // live lookup: folding a neighbouring block first re-points these wires to its arrow
+        const other = (x) => { const e = ext.get(x), id = e.a === x ? e.b : e.a; return byId.get(id) || d.nodes.find((n) => n.id === id); };
+        // order top to bottom by the far end; on a matrix arrow, by its port
+        const portOf = (x) => { const o = other(x); if (o.t !== 'M') return 0; const sd = matSides(d, o), e = ext.get(x); const f = sd.inSlots.concat(sd.outSlots).find((y) => y && y.e === e); return f ? f.j : 0; };
+        const ord = (a, b) => other(a).r - other(b).r || portOf(a) - portOf(b) || other(a).c - other(b).c || byId.get(a).r - byId.get(b).r;
+        zs.sort(ord); xs.sort(ord);
+        const A = xs.map((x) => zs.map((z) => (pairs.has([x, z].sort().join('|')) ? 1 : 0)));
+        comp.forEach((x) => taken.add(x));
+        blocks.push({ ids: comp, zs, xs, ext, other, A });
+      }
+    }
+    return blocks;
+  }
+  // Fold a block from findMatBlocks into one matrix arrow, in place. Returns the arrow, or null when
+  // no cell keeps every input wire on the input side and every output on the output side.
+  function foldMat(d, blk) {
+    const byId = new Map(d.nodes.map((n) => [n.id, n]));
+    const zc = blk.zs.reduce((s, x) => s + byId.get(x).c, 0) / blk.zs.length, xc = blk.xs.reduce((s, x) => s + byId.get(x).c, 0) / blk.xs.length;
+    const flip = zc > xc;
+    const inC = blk.zs.map((x) => blk.other(x).c), outC = blk.xs.map((x) => blk.other(x).c);
+    // unflipped: every input neighbour strictly left of the arrow, every output strictly right
+    const lo = flip ? Math.max(...outC) : Math.max(...inC), hi = flip ? Math.min(...inC) : Math.min(...outC);
+    const set = new Set(blk.ids);
+    const cells = blk.ids.map((x) => byId.get(x));
+    const rMid = Math.round(cells.reduce((s, n) => s + n.r, 0) / cells.length);
+    const free = (r, c) => !d.nodes.some((n) => !set.has(n.id) && n.r === r && n.c === c);
+    let best = null;
+    const cMid = Math.round((zc + xc) / 2);
+    for (let c = lo + 1; c < hi; c++) for (let dr = 0; dr < 12 && !best; dr++) {
+      for (const r of dr ? [rMid - dr, rMid + dr] : [rMid]) if (free(r, c)) { const sc = Math.abs(c - cMid) * 10 + dr; if (!best || sc < best.sc) best = { r, c, sc }; }
+    }
+    if (!best) return null;
+    const usedNames = new Set(d.nodes.filter((n) => n.t === 'M').map((n) => n.label));
+    const name = 'ABCDEFGHJKLMNPQRSTUVW'.split('').find((x) => !usedNames.has(x)) || 'A';
+    const M = { id: newId('n'), r: best.r, c: best.c, t: 'M', label: name, cmd: '', v: flip ? '<' : '', st: '', lin: '', lout: '', mat: blk.A };
+    blk.ids.forEach((x) => { const e = blk.ext.get(x); if (e.a === x) e.a = M.id; else e.b = M.id; });
+    M.pin = blk.zs.map((x) => blk.ext.get(x).id); M.pout = blk.xs.map((x) => blk.ext.get(x).id);
+    d.edges = d.edges.filter((e) => !(set.has(e.a) && set.has(e.b)));
+    d.nodes = d.nodes.filter((n) => !set.has(n.id));
+    d.nodes.push(M);
+    return M;
+  }
+
   root.ZX = {
+    parseMatrix, matText, matSides, matInfo, matForTex, matLabels, setPort, matBundles, unbundle, expandMat, expandMats, findMatBlocks, foldMat,
     newId, stripComments, readGroup, splitTop, splitOpts, parseCell, parseBody, parseEquation,
     findEquations, bounds, nodeTex, arrowTex, diagramTex, docTex, spreadOpts, newDiagram, fracParts, unicodeToTex,
   };

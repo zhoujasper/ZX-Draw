@@ -191,7 +191,9 @@
   const WIRE_CMDS = new Set(['', 'N', 'None', 'NoneDouble']);
   const hasH = (e) => ZX.splitOpts(e.o || '').includes('H');
   // Text cells (⋮, labels) are ignored in computation, with any wires touching them.
+  // Matrix arrows are computed as their Z/X normal form.
   function noText(d) {
+    d = ZX.expandMats(d);
     if (!d.nodes.some((n) => n.t === 'T')) return d;
     const t = new Set(d.nodes.filter((n) => n.t === 'T').map((n) => n.id));
     return Object.assign({}, d, { nodes: d.nodes.filter((n) => !t.has(n.id)), edges: d.edges.filter((e) => !t.has(e.a) && !t.has(e.b)) });
@@ -1064,9 +1066,67 @@
 
   // Simplify step by step. Returns { steps: [{ rule, rel, diagram }], note }.
   // rel is '=' or '\propto', taken from comparing the step with the one before it.
+  // The F2 matrix of a parity map |x⟩ ↦ |Ax⟩ (up to a scalar), or null when d is not one.
+  // Only phase-free Z / X spiders and plain wires; checked on the computed matrix.
+  function parityOf(d) {
+    let an;
+    try { an = analyse(d); } catch (_) { return null; }
+    for (const n of d.nodes) {
+      const k = an.kind.get(n.id);
+      if (k === 'H') return null;
+      if ((k === 'Z' || k === 'X') && !pIsZero(n._ph)) return null;
+    }
+    if (d.edges.some(hasH) || !d.nodes.some((n) => { const k = an.kind.get(n.id); return k === 'Z' || k === 'X'; })) return null;
+    let M;
+    try { M = evaluate(d, { exact: false }); } catch (_) { return null; }
+    const n = M.ins, m = M.outs, N = 1 << n;
+    if (!n || !m || n + m > 16) return null;
+    const mag = (z) => Math.hypot(z[0], z[1]);
+    const y = []; let ref = null;
+    for (let x = 0; x < N; x++) {
+      let hit = -1;
+      for (let r = 0; r < (1 << m); r++) {
+        const v = mag(M.data[r * N + x]);
+        if (v < 1e-9) continue;
+        if (hit >= 0) return null;
+        hit = r;
+        if (ref == null) ref = v; else if (Math.abs(v - ref) > 1e-6 * ref) return null;
+      }
+      if (hit < 0) return null;
+      y.push(hit);
+    }
+    if (y[0] !== 0) return null;
+    const col = (j) => y[1 << (n - 1 - j)];
+    for (let x = 0; x < N; x++) { let v = 0; for (let j = 0; j < n; j++) if ((x >> (n - 1 - j)) & 1) v ^= col(j); if (v !== y[x]) return null; }
+    return Array.from({ length: m }, (_, i) => Array.from({ length: n }, (_, j) => (col(j) >> (m - 1 - i)) & 1));
+  }
+  // Parity normal form of A: inputs → Z spiders → X spiders → outputs, Z_j–X_i wired when A_ij = 1.
+  function pnfDiagram(A, opts) {
+    const d = ZX.newDiagram(opts || ''), m = A.length, n = A[0].length;
+    const mk = (t, r, c) => { const x = { id: ZX.newId('n'), r, c, t, label: '', cmd: t === 'N' ? 'N' : '', v: '', st: '' }; d.nodes.push(x); return x; };
+    const ed = (a, b) => d.edges.push({ id: ZX.newId('e'), a: a.id, b: b.id, o: '' });
+    const off = (k) => Math.floor((Math.max(m, n) - k) / 2);
+    const Z = [], X = [];
+    for (let j = 0; j < n; j++) { const b = mk('N', j + off(n), 0); Z.push(mk('Z', j + off(n), 1)); ed(b, Z[j]); }
+    for (let i = 0; i < m; i++) { X.push(mk('X', i + off(m), 2)); ed(X[i], mk('N', i + off(m), 3)); }
+    for (let j = 0; j < n; j++) for (let i = 0; i < m; i++) if (A[i][j]) ed(Z[j], X[i]);
+    return d;
+  }
+  const sameMat = (A, B) => A && B && A.length === B.length && A.every((r, i) => r.length === B[i].length && r.every((v, j) => v === B[i][j]));
+
   function simplify(d0, opt) {
     opt = opt || {};
     const maxSteps = opt.maxSteps || 40;
+    // matrix arrows: unfolded on the grid first (shown as the first step, :=), folded back at the end
+    const arrows = d0.nodes.filter((n) => n.t === 'M').sort((a, b) => a.c - b.c || a.r - b.r);
+    let unfold = null;
+    if (arrows.length) {
+      const g = clone(d0);
+      arrows.forEach((a) => ZX.expandMat(g, a.id, true));   // clone keeps the ids
+      compact(g);
+      unfold = g; d0 = g;
+    }
+    const pnfOn = opt.pnf === true || (opt.pnf !== false && arrows.length > 0);
     d0 = noText(d0);
     analyse(d0);   // throws a readable error if the diagram has no meaning
     const cache = new Map();
@@ -1096,6 +1156,33 @@
       break;
     }
     if (!note && steps.length >= maxSteps) note = `Stopped after ${maxSteps} steps.`;
+    // parity maps: rewrite to parity normal form, then (when the start had arrows) fold it into one arrow
+    let parity = null;
+    if (!note) {
+      const A = parityOf(cur);
+      if (A && pnfOn) {
+        const blocks = ZX.findMatBlocks(cur), spiders = cur.nodes.filter((n) => n.t === 'Z' || n.t === 'X').length;
+        const already = blocks.length === 1 && blocks[0].ids.length === spiders && sameMat(blocks[0].A, A);
+        let pn = cur;
+        if (!already) {
+          pn = pnfDiagram(A, cur.opts);
+          const cmp = compare(cur, pn, cache);
+          if (cmp.rel === 'ne') { pn = null; note = 'Stopped: the parity normal form did not check out, so it was not used.'; }
+          else { steps.push({ rule: '(pnf)', rel: cmp.rel === 'eq' ? '=' : '\\propto', diagram: pn, key: 'pnf' }); cur = pn; }
+        }
+        if (pn && arrows.length) {
+          const f = clone(pn), bs = ZX.findMatBlocks(f, new Set(f.nodes.filter((n) => n.t === 'Z' || n.t === 'X').map((n) => n.id)));
+          const M = bs.length === 1 ? ZX.foldMat(f, bs[0]) : null;
+          if (M) {
+            // the product of the arrows, written right to left (A then B → BA)
+            M.label = arrows.map((a) => (a.label || '').trim()).every(Boolean) ? arrows.map((a) => a.label.trim()).reverse().join('') : 'A';
+            compact(f);
+            steps.push({ rule: '', rel: '=', diagram: f, key: 'fold' });
+            cur = f;
+          }
+        }
+      } else if (A) parity = { rows: A.length, cols: A[0].length };
+    }
     // final safety check against the start
     if (steps.length) {
       const fin = compare(d0, cur);   // fresh random values for the final check
@@ -1104,11 +1191,12 @@
     // merge silent scalar / loop removals into the step before them
     const merged = [];
     steps.forEach((s) => {
-      if (s.rule === '' && merged.length) { const p = merged[merged.length - 1]; p.diagram = s.diagram; if (s.rel !== '=') p.rel = '\\propto'; }
+      if (s.rule === '' && merged.length && s.key !== 'fold') { const p = merged[merged.length - 1]; p.diagram = s.diagram; if (s.rel !== '=') p.rel = '\\propto'; }
       else merged.push(s);
     });
+    if (unfold) merged.unshift({ rule: '', rel: '=', diagram: noText(unfold), key: 'unfold' });
     merged.forEach((s) => { s.diagram = freshIds(s.diagram); s.sep = sepTex(s.rule, s.rel); });
-    return { steps: merged, note, rejected };
+    return { steps: merged, note, rejected, parity };
   }
   const sepTex = (rule, rel) => (rule ? `\\stackrel{\\mathbf{${rule}}}{${rel}}` : rel);
 

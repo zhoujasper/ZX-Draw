@@ -42,6 +42,7 @@
   function toPyzx(d0, opt = {}) {
     const hEdges = opt.hEdges !== false;
     const warn = [];
+    d0 = ZX.expandMats(d0);   // matrix arrows go out as their Z/X spiders
     const textIds = new Set(d0.nodes.filter((n) => n.t === 'T').map((n) => n.id));
     if (textIds.size) warn.push(`${textIds.size} text cell${textIds.size > 1 ? 's were' : ' was'} left out`);
     const d = Object.assign({}, d0, { nodes: d0.nodes.filter((n) => !textIds.has(n.id)), edges: d0.edges.filter((e) => !textIds.has(e.a) && !textIds.has(e.b)) });
