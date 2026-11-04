@@ -3712,13 +3712,13 @@ const SHOW_MS = 720;
 const easeIO = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 function slideList() { return doc.diagrams.map((d, i) => i).filter((i) => doc.diagrams[i].nodes.length); }
 // positions relative to the diagram's centre, and the scale that fits it on screen
-function slideGeo(d) {
+function slideGeo(d, wf = 0.82, hf = 0.66) {
   const ps = new Map(d.nodes.map((n) => [n.id, pos(d, n)]));
   const xs = [...ps.values()].map((p) => p.x), ys = [...ps.values()].map((p) => p.y);
   const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
   ps.forEach((p, k) => ps.set(k, { x: p.x - cx, y: p.y - cy }));
   const w = Math.max(...xs) - Math.min(...xs) + CW * 2, h = Math.max(...ys) - Math.min(...ys) + CH * 2;
-  const k = Math.max(0.4, Math.min(2.4, (innerWidth * 0.82) / w, (innerHeight * 0.66) / h));
+  const k = Math.max(0.3, Math.min(2.4, (innerWidth * wf) / w, (innerHeight * hf) / h));
   return { ps, k };
 }
 function matchNodes(A, B, gA, gB) {
@@ -3739,6 +3739,7 @@ function nearestOfType(n, p, list, ps) {
 }
 // draw a slide, or the morph from slide `from` to slide `to` at progress t (0…1)
 function drawShow(from, to, t) {
+  if (show.pair) return drawPair(from, to, t);
   const stage = show.el.querySelector('.show-stage');
   const B = doc.diagrams[show.list[to]], gB = slideGeo(B);
   const W = innerWidth / 2, H = innerHeight / 2 + 18;
@@ -3783,11 +3784,60 @@ function drawShow(from, to, t) {
   }
   stage.innerHTML = `<div class="show-world" style="transform:translate(${W}px,${H}px) scale(${k.toFixed(4)})"><svg class="show-svg" overflow="visible" width="1" height="1">${S.join('')}</svg>${N.join('')}</div>`;
 }
+// ---- two-up mode: from the second slide on, the previous diagram (left), the relation, and the current one (right).
+// Stepping forward slides the old one out to the left, the current one over, and the next one in from the right.
+function pairLayout(i) {
+  const W = innerWidth, items = [];
+  const one = (j, x, wf) => { const d = doc.diagrams[show.list[j]], g = slideGeo(d, wf, 0.6); items.push({ key: 'd' + j, j, x, k: g.k, g }); };
+  if (i === 0) one(0, W / 2, 0.82);
+  else {
+    one(i - 1, W * 0.27, 0.38); one(i, W * 0.73, 0.38);
+    const a = show.list[i - 1], b = show.list[i];
+    items.push({ key: 'r' + i, rel: b === a + 1 ? sepOf(a) || '=' : '\\cdots', x: W / 2 });
+  }
+  return items;
+}
+function pairItemHTML(it, y, op, dx = 0) {
+  if (it.rel != null) return `<div class="show-prel" style="left:${(it.x + dx).toFixed(1)}px;top:${y}px;opacity:${op.toFixed(3)}">${tex(it.rel)}</div>`;
+  const d = doc.diagrams[show.list[it.j]], P = (dd, n) => it.g.ps.get(n.id), S = [], N = [];
+  const byId = new Map(d.nodes.map((n) => [n.id, n]));
+  d.edges.forEach((e) => { const a = byId.get(e.a), b = byId.get(e.b); if (!a || !b) return; const g = rawGeom(d, e, a, b, P); S.push(`<path d="${g.d}" class="show-wire"/>`); if (g.h) S.push(`<rect class="show-h" x="${g.m.x - 7}" y="${g.m.y - 7}" width="14" height="14"/>`); });
+  d.nodes.forEach((n) => N.push(nodeHTML(n, it.g.ps.get(n.id), false)));
+  return `<div class="show-world" style="transform:translate(${(it.x + dx).toFixed(1)}px,${y}px) scale(${it.k.toFixed(4)});opacity:${op.toFixed(3)}"><svg class="show-svg" overflow="visible" width="1" height="1">${S.join('')}</svg>${N.join('')}</div>`;
+}
+function drawPair(from, to, t) {
+  const stage = show.el.querySelector('.show-stage'), y = innerHeight / 2 + 18, W = innerWidth;
+  const B = pairLayout(to);
+  if (from == null || from === to || t >= 1) { stage.innerHTML = B.map((it) => pairItemHTML(it, y, 1)).join(''); return; }
+  const A = pairLayout(from), e = easeIO(t), dir = to > from ? 1 : -1, out = [];
+  const inA = new Map(A.map((it) => [it.key, it])), inB = new Map(B.map((it) => [it.key, it]));
+  // kept: glide (and rescale) to the new place; leaving: slide out the way we came; arriving: slide in from the other side
+  B.forEach((b) => {
+    const a = inA.get(b.key);
+    if (a) out.push(pairItemHTML(Object.assign({}, b, { x: a.x + (b.x - a.x) * e, k: a.k != null ? a.k + (b.k - a.k) * e : b.k }), y, 1));
+    else out.push(pairItemHTML(b, y, Math.min(1, e * 1.4), dir * W * 0.32 * (1 - e)));
+  });
+  A.forEach((a) => { if (!inB.has(a.key)) out.push(pairItemHTML(a, y, Math.max(0, 1 - e * 1.5), -dir * W * 0.32 * e)); });
+  stage.innerHTML = out.join('');
+}
+function setShowPair(on) {
+  show.pair = on;
+  try { localStorage.setItem('zx-draw-show-pair', on ? '1' : ''); } catch (_) {}
+  show.el.classList.toggle('pair', on);
+  const b = show.el.querySelector('[data-sh="pair"]');
+  if (b) { b.classList.toggle('on', on); b.title = on ? 'Two diagrams per slide: on (T)' : 'Two diagrams per slide: off (T)'; }
+  const st = show.el.querySelector('.show-stage');
+  st.classList.remove('swap'); void st.offsetWidth; st.classList.add('swap');
+  cancelAnimationFrame(show.raf); show.anim = null;
+  drawShow(null, show.i, 1); showCaption(show.i);
+}
 function showCaption(i) {
   const cap = show.el.querySelector('.show-cap'), j = show.list[i], prev = i > 0 ? show.list[i - 1] : null;
   const rel = prev != null && prev === j - 1 ? sepOf(prev) : '';
   cap.classList.remove('in'); void cap.offsetWidth;
-  cap.innerHTML = `${rel ? `<span class="show-rel">${tex(rel)}</span>` : ''}<span class="show-name">${esc(nameOf(j))}</span>`;
+  cap.innerHTML = show.pair
+    ? `<span class="show-name">${i > 0 ? `${esc(nameOf(show.list[i - 1]))}<span class="show-arrow">→</span>${esc(nameOf(j))}` : esc(nameOf(j))}</span>`
+    : `${rel ? `<span class="show-rel">${tex(rel)}</span>` : ''}<span class="show-name">${esc(nameOf(j))}</span>`;
   cap.classList.add('in');
   show.el.querySelector('.show-count').textContent = `${i + 1} / ${show.list.length}`;
   show.el.querySelectorAll('.show-dot').forEach((b, k) => b.classList.toggle('on', k === i));
@@ -3830,11 +3880,17 @@ function startShow() {
       <div class="show-dots">${list.map((j, k) => `<button class="show-dot" data-sh="${k}" title="${esc(nameOf(j))}"></button>`).join('')}</div>
       <button class="show-btn" data-sh="next" title="Next (→ / Space)">${I.chevR}</button>
       <span class="show-count"></span>
+      <span class="show-sep"></span>
+      <button class="show-btn show-pairbtn" data-sh="pair" title="Two diagrams per slide (T)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="3" y="6.5" width="7.5" height="11" rx="1.6"/><rect x="13.5" y="6.5" width="7.5" height="11" rx="1.6"/></svg></button>
       <button class="show-btn" data-sh="exit" title="Exit (Esc)">${I.close}</button>
     </div>`;
   document.body.appendChild(el);
   const start = Math.max(0, list.indexOf(activeDi));
-  show = { el, list, i: start, anim: null, raf: 0, idleT: 0 };
+  let pair = false;
+  try { pair = localStorage.getItem('zx-draw-show-pair') === '1'; } catch (_) {}
+  show = { el, list, i: start, anim: null, raf: 0, idleT: 0, pair };
+  el.classList.toggle('pair', pair);
+  const pb = el.querySelector('[data-sh="pair"]'); if (pb) pb.classList.toggle('on', pair);
   drawShow(null, start, 1); showCaption(start);
   requestAnimationFrame(() => el.classList.add('open'));
   if (el.requestFullscreen) el.requestFullscreen().catch(() => {});
@@ -3844,7 +3900,7 @@ function startShow() {
     const b = e.target.closest('[data-sh]');
     if (!b) return goShow(show.i + (e.clientX < innerWidth * 0.3 ? -1 : 1));   // click the slide: next (left third: back)
     const v = b.dataset.sh;
-    if (v === 'prev') goShow(show.i - 1); else if (v === 'next') goShow(show.i + 1); else if (v === 'exit') endShow(); else goShow(+v);
+    if (v === 'prev') goShow(show.i - 1); else if (v === 'next') goShow(show.i + 1); else if (v === 'exit') endShow(); else if (v === 'pair') setShowPair(!show.pair); else goShow(+v);
   });
 }
 function endShow() {
@@ -3866,6 +3922,7 @@ document.addEventListener('keydown', (e) => {
   else if (k === 'Home') goShow(0);
   else if (k === 'End') goShow(show.list.length - 1);
   else if (k === 'Escape') endShow();
+  else if (k === 't' || k === 'T') setShowPair(!show.pair);
   else return;
   e.preventDefault(); e.stopImmediatePropagation(); showIdle();
 }, true);

@@ -884,3 +884,17 @@ input[type="checkbox"]:not(.switch input):disabled { opacity: .4; cursor: defaul
 /* export format tabs in the title row */
 .sheet header .hdr-tabs { margin: 0 auto 0 16px; animation: optsIn .3s cubic-bezier(.22,1,.36,1); }
 @media (max-width: 640px) { .sheet header .hdr-tabs { margin-left: 10px; } .sheet header .hdr-tabs button { padding: 0 9px; } }
+
+/* presentation: two diagrams per slide */
+.show-prel { position: absolute; transform: translate(-50%, -50%); font-size: 34px; color: #6b2d8f; white-space: nowrap; }
+.show-arrow { margin: 0 10px; color: #b9b9b2; font-weight: 400; }
+.show-sep { width: 1px; height: 18px; background: var(--line); margin: 0 2px; }
+.show-pairbtn { color: var(--muted); }
+.show-pairbtn.on { color: #fff; background: var(--ink); }
+.show-pairbtn.on:hover { background: #333; }
+.show-pairbtn svg rect { transition: transform .3s cubic-bezier(.3,1.4,.5,1); transform-box: fill-box; transform-origin: center; }
+.show-pairbtn.on svg rect:first-child { transform: translateX(-1px); }
+.show-pairbtn.on svg rect:last-child { transform: translateX(1px); }
+.show-stage.swap { animation: showSwap .38s ease; }
+@keyframes showSwap { from { opacity: 0; } }
+@media (max-width: 640px) { .show-prel { font-size: 24px; } }
