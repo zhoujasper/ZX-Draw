@@ -1,5 +1,7 @@
 # ZX Draw
 
+[![Netlify Status](https://api.netlify.com/api/v1/badges/55fb401a-d88c-4aaa-8c8d-a4ad9709f435/deploy-status)](https://app.netlify.com/projects/zx-calculus/deploys)
+
 A browser editor for **ZX-calculus** diagrams that reads and writes the LaTeX of the
 [`zx-calculus`](https://ctan.org/pkg/zx-calculus) package (`\zx{…}`, tikz-cd syntax), and checks
 every step of a rewrite by computing it.
