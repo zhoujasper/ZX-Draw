@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
   <title>ZX Draw</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
-  <link rel="stylesheet" href="style.css?v=73">
+  <link rel="stylesheet" href="style.css?v=74">
 </head>
 <body>
   <main id="viewport">
@@ -23,16 +23,18 @@
       <span class="name">ZX Draw</span>
     </div>
     <div id="tabs" class="tabs"></div>
+    <button class="swt hide-m" id="btnGrid" role="switch" aria-checked="true" title="Grid on: whole cells, dots shown. Off: nodes can also sit half way between cells (exported with zxHalf)"><span class="swt-lbl">Grid</span><span class="swt-track"><span class="swt-knob"></span></span></button>
     <button class="swt" id="btnSingle" role="switch" aria-checked="false"><span class="swt-lbl">Single graph</span><span class="swt-track"><span class="swt-knob"></span></span></button>
     <div class="top-actions">
       <button class="ibtn hide-m" id="btnTidy" title="Tidy layout (L)"></button>
       <button class="ibtn hide-m wbtn" id="btnWrap" title="Line wrapping: diagrams per line"></button>
-      <button class="ibtn hide-m" id="btnHelp" title="Shortcuts (?)"></button>
-      <button class="ibtn" id="btnSimp" title="Simplify the current diagram step by step (R)"><span class="bi"></span></button>
-      <button class="ibtn" id="btnNew" title="Canvas: save, open, import, export"></button>
       <span class="tsep hide-m"></span>
-      <button class="btn ghost cbtn" id="btnCheck" title="Check every step: ✓ / ≈ / ✗ next to each relation"><span class="bi"></span><span class="lbl">Check</span></button>
-      <button class="btn ghost cbtn" id="btnMat" title="Matrix of the current diagram, and checks of every relation (M)"><span class="bi"></span><span class="lbl">Matrix</span></button>
+      <button class="ibtn cbtn" id="btnCheck" title="Check every step: ✓ / ≈ / ✗ next to each relation"><span class="bi"></span></button>
+      <button class="ibtn" id="btnMat" title="Matrix of the current diagram, and checks of every relation (M)"><span class="bi"></span></button>
+      <button class="ibtn" id="btnSimp" title="Simplify the current diagram step by step (R)"><span class="bi"></span></button>
+      <span class="tsep hide-m"></span>
+      <button class="ibtn" id="btnNew" title="Canvas: save, open, import, export"></button>
+      <button class="ibtn hide-m" id="btnHelp" title="Shortcuts (?)"></button>
       <span class="tsep hide-m"></span>
       <button class="btn" id="btnImport"><span class="bi"></span><span class="lbl">Import</span></button>
       <button class="btn primary" id="btnExport"><span class="bi"></span><span class="lbl">Export</span></button>
@@ -91,9 +93,9 @@
   <div id="toast"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-  <script src="zx-core.js?v=28"></script>
+  <script src="zx-core.js?v=29"></script>
   <script src="zx-sim.js?v=31"></script>
   <script src="zx-pyzx.js?v=2"></script>
-  <script src="app.js?v=85"></script>
+  <script src="app.js?v=86"></script>
 </body>
 </html>

@@ -123,7 +123,12 @@ const fallbackTex = (s) => s.replace(/\\pi/g, 'π').replace(/\\alpha/g, 'α').re
 // ---------- model helpers ----------
 const pos = (d, n) => ({ x: d.ox + n.c * CW, y: d.oy + n.r * CH });
 const at = (d, r, c) => d.nodes.find((n) => n.r === r && n.c === c);
-const cellOf = (d, p) => ({ r: Math.round((p.y - d.oy) / CH), c: Math.round((p.x - d.ox) / CW) });
+// Grid on: whole cells (dots shown). Grid off: half cells too, no dots (LaTeX gets \zx[zxHalf] on a finer grid).
+let gridOn = true;
+try { gridOn = localStorage.getItem('zx-draw-grid-v1') !== '0'; } catch (_) {}
+const STEP = () => (gridOn ? 1 : 0.5);
+const snapTo = (v) => Math.round(v / STEP()) * STEP();
+const cellOf = (d, p) => ({ r: snapTo((p.y - d.oy) / CH), c: snapTo((p.x - d.ox) / CW) });
 const makeNode = (t, r, c) => Object.assign({ id: ZX.newId('n'), r, c, t, label: t === 'T' ? '\\vdots' : '', cmd: '', v: '', st: '' },
   t === 'M' ? { label: 'A', lin: '', lout: '', mat: null } : {});
 function findNode(id) { for (const d of doc.diagrams) { const n = d.nodes.find((m) => m.id === id); if (n) return { n, d }; } return null; }
@@ -1097,6 +1102,7 @@ function swapColour() {
 
 function nudge(dr, dc) {
   if (lockedStop()) return;
+  dr *= STEP(); dc *= STEP();
   const ns = [...sel].filter((i) => i[0] === 'n').map(findNode).filter(Boolean);
   if (!ns.length) return;
   const ids = new Set(ns.map((x) => x.n.id));
@@ -1900,7 +1906,7 @@ vp.addEventListener('pointermove', (e) => {
   if (drag.type === 'move') {
     const dt = dropTarget(drag, p), did = dt ? dt.id : null;
     if (did !== drag.dropId && Math.hypot(p.x - drag.p0.x, p.y - drag.p0.y) > 10) { drag.dropId = did; render(); }
-    const dc = Math.round((p.x - drag.p0.x) / CW), dr = Math.round((p.y - drag.p0.y) / CH);
+    const dc = snapTo((p.x - drag.p0.x) / CW), dr = snapTo((p.y - drag.p0.y) / CH);
     if (dc === drag.dc && dr === drag.dr) return;
     const moving = new Set(drag.ids);
     const occ = new Set(drag.d.nodes.filter((n) => !moving.has(n.id)).map((n) => n.r + ',' + n.c));
@@ -2630,10 +2636,12 @@ function drawMArrow(n, p, w) {
   return { svg: svg.join(''), tk: tk.join(' ') };
 }
 function drawDiagram(d) {
+  d = ZX.texGrid(d);   // half cells: a grid twice as fine, half the spacing (as \zx[zxHalf] in LaTeX)
   const o = ZX.splitOpts(d.opts || '');
   const get = (k) => { const t = o.find((x) => x.startsWith(k)); return t ? lenMM(t.split('=')[1]) : null; };
   let colSep = get('column sep'), rowSep = get('row sep');
-  const explicit = colSep != null || rowSep != null || o.includes('circuit');
+  if (o.includes('zxHalf')) { colSep = colSep ?? 1.6; rowSep = rowSep ?? 1.4; }
+  const explicit = (colSep != null || rowSep != null || o.includes('circuit')) && !o.includes('zxHalf');
   if (o.includes('circuit')) { colSep = colSep ?? 4; rowSep = rowSep ?? 4; }
   const wireOnly = !d.nodes.some((n) => n.t === 'Z' || n.t === 'X' || n.t === 'H' || n.t === 'M');
   colSep = colSep ?? (wireOnly ? 12 : 3.2); rowSep = rowSep ?? 2.8;
@@ -4494,6 +4502,19 @@ function confirmSingle() {
   el.querySelector('[data-c="1"]').focus();
 }
 $('#btnSingle').onclick = (e) => { e.currentTarget.blur(); confirmSingle(); };
+function syncGrid() {
+  const b = $('#btnGrid');
+  if (b) { b.classList.toggle('on', gridOn); b.setAttribute('aria-checked', gridOn ? 'true' : 'false'); }
+  vp.classList.toggle('nogrid', !gridOn);
+}
+function toggleGrid() {
+  gridOn = !gridOn;
+  try { localStorage.setItem('zx-draw-grid-v1', gridOn ? '1' : '0'); } catch (_) {}
+  syncGrid();
+  toast(gridOn ? 'Grid on: nodes snap to whole cells' : 'Grid off: nodes can also sit half way between cells');
+}
+$('#btnGrid').onclick = (e) => { e.currentTarget.blur(); toggleGrid(); };
+syncGrid();
 
 // ---------- movable dock: drag the grip to the bottom, left or right edge ----------
 const DOCK_KEY = 'zx-draw-dock-v1';

@@ -1078,3 +1078,12 @@ select.sel { height: 30px; border-radius: 8px; border: 1px solid var(--line); ba
 .edge.nb-wire .wire-p { stroke: var(--nbc); stroke-width: 2.4; animation: nbwire 1.25s ease-in-out var(--nbd, 0s) infinite both; }
 @keyframes nbwire { 0%, 100% { stroke-opacity: .35; } 22% { stroke-opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .nb-ring, .nb-ring::after, .nb-src, .edge.nb-wire .wire-p { animation: none; } }
+
+/* ---------- grid switch: no dots when off ---------- */
+#viewport.nogrid::before { opacity: 0; }
+/* Check / Matrix / Simplify as plain icons in the top bar */
+.ibtn { position: relative; }
+.ibtn .bi { display: grid; place-items: center; line-height: 0; }
+.ibtn.cbtn.on { background: rgba(42,157,92,.1); color: #2a9d5c; }
+.ibtn.cbtn.on:hover { background: rgba(42,157,92,.16); }
+.ibtn.cbtn .cbad { position: absolute; top: 2px; right: 1px; min-width: 14px; height: 14px; padding: 0 3px; border-radius: 7px; font: 600 9px/14px system-ui, sans-serif; box-shadow: 0 0 0 2px var(--bg); animation: okpop .25s cubic-bezier(.3,1.5,.5,1); }

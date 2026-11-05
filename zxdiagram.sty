@@ -124,4 +124,10 @@
 \NewExpandableDocumentCommand{\zxMat}{t< O{} m m m}{%
   \node[zxMatArrow]{\zxMatPic{\IfBooleanTF{#1}{-1}{1}}{#3}{#4}{#5}};}
 
+% ---- half cells
+% ZX Draw writes \zx[zxHalf]{...} when a node sits half way between two cells: the grid is
+% twice as fine, so the spacing is halved; spiders keep the size of a plain \zx{...}.
+\tikzset{zxHalf/.style={/tikz/commutative diagrams/row sep=1.4mm, /tikz/commutative diagrams/column sep=1.6mm,
+  /utils/exec={\def\zxSpiderSize{2.6mm}\def\zxPointPad{1.3mm}}}}
+
 \endinput

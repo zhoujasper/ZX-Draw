@@ -158,7 +158,7 @@
       if (!t) { t = Object.assign(blankNode(), { r, c, cmd: 'N' }); d.nodes.push(t); grid.set(key, t); }
       d.edges.push({ id: newId('e'), a: a.from.id, b: t.id, o: a.opts });
     });
-    return unbundle(d);
+    return unbundle(fromHalf(d));
   }
 
   function cleanSep(s) {
@@ -297,8 +297,27 @@
     return out;
   }
 
+  // ---------- half cells ----------
+  // A node may sit between two grid cells (r or c ending in .5). LaTeX has only whole cells, so such a
+  // diagram is written on a grid twice as fine with the zxHalf option (zxdiagram.sty: half the spacing,
+  // same spider size), and read back the same way.
+  const isHalf = (d) => d.nodes.some((n) => n.r % 1 || n.c % 1);
+  function texGrid(d) {
+    if (!isHalf(d)) return d;
+    const o = splitOpts(d.opts || '').filter((t) => t !== 'zxHalf');
+    return Object.assign({}, d, { opts: ['zxHalf'].concat(o).join(', '), nodes: d.nodes.map((n) => Object.assign({}, n, { r: Math.round(n.r * 2), c: Math.round(n.c * 2) })) });
+  }
+  function fromHalf(d) {
+    const o = splitOpts(d.opts || '');
+    if (!o.includes('zxHalf')) return d;
+    d.opts = o.filter((t) => t !== 'zxHalf').join(', ');
+    d.nodes.forEach((n) => { n.r /= 2; n.c /= 2; });
+    return d;
+  }
+
   function diagramTex(d, ind) {
     ind = ind == null ? '    ' : ind;
+    d = texGrid(d);
     const b = bounds(d);
     const R = b.r1 - b.r0 + 1, C = b.c1 - b.c0 + 1;
     const cells = Array.from({ length: R }, () => Array(C).fill(''));
@@ -658,6 +677,6 @@
   root.ZX = {
     parseMatrix, matText, matSides, matInfo, matForTex, matLabels, setPort, matBundles, unbundle, expandMat, expandMats, findMatBlocks, foldMat,
     newId, stripComments, readGroup, splitTop, splitOpts, parseCell, parseBody, parseEquation,
-    findEquations, bounds, nodeTex, arrowTex, diagramTex, docTex, spreadOpts, newDiagram, fracParts, unicodeToTex,
+    findEquations, bounds, isHalf, texGrid, fromHalf, nodeTex, arrowTex, diagramTex, docTex, spreadOpts, newDiagram, fracParts, unicodeToTex,
   };
 })(typeof module !== 'undefined' && module.exports ? module.exports : typeof window !== 'undefined' ? window : self);   // self: inside a Web Worker
