@@ -3769,9 +3769,9 @@ function drawCanvasMenu() {
       if (!bk.length) return '';
       const label = { auto: 'Automatic', unreadable: 'Rescued · unreadable', 'partly unreadable': 'Rescued · partly unreadable', 'before replace': 'Before replacing' };
       return `<div class="mdiv"></div><button class="mrow bk-toggle" id="bkToggle">${I.clock || I.file}<span>Backups</span><kbd>${bk.length}</kbd></button>
-        <div class="bk-list${menu.dataset.bk ? ' open' : ''}">${bk.map((b, i) => { const info = backupInfo(b); const p = info ? info.tabs.length : 0;
+        <div class="bk-list${menu.dataset.bk ? ' open' : ''}"><div class="bk-in">${bk.map((b, i) => { const info = backupInfo(b); const p = info ? info.tabs.length : 0;
           return `<div class="bk-item"><div class="mtext"><div class="mname">${label[b.reason] || b.reason}</div><div class="mmeta">${ago(b.t)}${info ? ` · ${p} page${p === 1 ? '' : 's'}` : ' · raw data'}</div></div>
-            ${info ? `<button class="btn sm ghost" data-bkopen="${i}">Restore</button>` : ''}<button class="ib" data-bkdl="${i}" title="Download this backup">${I.down}</button></div>`; }).join('')}</div>`;
+            ${info ? `<button class="btn sm ghost" data-bkopen="${i}">Restore</button>` : ''}<button class="ib" data-bkdl="${i}" title="Download this backup">${I.down}</button></div>`; }).join('')}</div></div>`;
     })()}
     <input type="file" id="cvFile" accept=".zxd,.json,application/json" hidden>`;
 }

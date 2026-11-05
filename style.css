@@ -813,10 +813,9 @@ input[type="checkbox"]:not(.switch input):disabled { opacity: .4; cursor: defaul
 
 /* canvas menu: backups */
 .bk-list { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows .3s cubic-bezier(.22,1,.36,1), opacity .2s; }
-.bk-list > * { min-height: 0; }
+.bk-list > .bk-in { min-height: 0; overflow: hidden; }   /* one child: the 0fr row collapses all of it */
 .bk-list.open { grid-template-rows: 1fr; opacity: 1; }
-.bk-list { overflow: hidden; }
-.bk-list.open { max-height: 260px; overflow-y: auto; }
+.bk-list.open > .bk-in { max-height: 260px; overflow-y: auto; }
 .bk-item { display: flex; align-items: center; gap: 6px; padding: 5px 6px 5px 30px; border-radius: 8px; }
 .bk-item:hover { background: var(--soft); }
 .bk-item .mtext { flex: 1; min-width: 0; }
