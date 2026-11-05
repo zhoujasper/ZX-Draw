@@ -93,7 +93,7 @@ const EXAMPLE = String.raw`\[
 let doc = { diagrams: [], seps: [] };
 let wirePend = null; // wire tool: first node of a click-click connection
 let sel = new Set(), tool = 'select', cam = { x: 0, y: 0, k: 1 }, preview = false;
-let drag = null, pinch = null, spaceDown = false, lastWorld = null, activeDi = 0, clip = null;
+let drag = null, pinch = null, spaceDown = false, holdS = false, lastWorld = null, activeDi = 0, clip = null;
 let hist = [], redoStack = [];
 const pointers = new Map();
 // A canvas holds several tabs (pages). `doc` is always the open tab's diagrams; each tab keeps
@@ -561,7 +561,7 @@ function render() {
   if (!drag && tool === 'edge' && fanTp) {
     const fd = doc.diagrams.find((d) => d.nodes.some((n) => sel.has(n.id)));
     const ss = fd ? fanSources(fd) : [];
-    if (ss.length > 1) ss.forEach((n) => { const q = pos(fd, n); S.push(`<path class="ghost-line fan" d="M${q.x} ${q.y}L${fanTp.x} ${fanTp.y}"/>`); });
+    if (ss.length >= fanMin()) ss.forEach((n) => { const q = pos(fd, n); S.push(`<path class="ghost-line fan" d="M${q.x} ${q.y}L${fanTp.x} ${fanTp.y}"/>`); });
   }
   if (!drag && wirePend && wirePend.tp && doc.diagrams.includes(wirePend.d)) {
     const q = wirePend.port || pos(wirePend.d, wirePend.n);
@@ -1678,6 +1678,7 @@ vp.addEventListener('contextmenu', (e) => {
   e.preventDefault();
   if (isLocked()) return;
   if (drag && drag.type === 'ghost') return;
+  if (tool === 'edge') return;   // right button in the wire tool = box select; a plain right-click opens the panel on release
   const ne = e.target.closest('[data-node]'), ee = e.target.closest('[data-edge]');
   const id = ne ? ne.dataset.node : ee ? ee.dataset.edge : null;
   if (!id) return;
@@ -1690,7 +1691,15 @@ vp.addEventListener('pointerdown', (e) => {
   if (sepEl && tool !== 'hand' && !isLocked()) { e.preventDefault(); return openSep(+sepEl.dataset.sep); }
   if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
   closePop();
-  if (e.button === 2) return;
+  if (e.button === 2) {
+    // wire tool: hold the right button and drag to box-select, as with Select
+    if (tool !== 'edge' || isLocked() || pointers.size) return;
+    const t = e.target.closest('[data-node],[data-edge]');
+    wirePend = null; fanTp = null;
+    try { vp.setPointerCapture(e.pointerId); } catch (_) {}
+    drag = { type: 'marq', right: true, ctx: t ? (t.dataset.node || t.dataset.edge) : null, p0: toWorld(e.clientX, e.clientY), sx: e.clientX, sy: e.clientY, base: e.shiftKey ? new Set(sel) : new Set(), moved: false };
+    return;
+  }
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   try { vp.setPointerCapture(e.pointerId); } catch (_) {}
   if (pointers.size === 2) { startPinch(); return; }
@@ -1731,7 +1740,7 @@ vp.addEventListener('pointerdown', (e) => {
     activeDi = doc.diagrams.indexOf(d);
     if (tool === 'edge') {
       const sp = n.t === 'M' ? pickPort(d, n, p) : null;
-      drag = { type: 'edge', d, from: n, p0: sp || pos(d, n), startPort: sp, tp: null, tgt: {}, chain: [n], lp: p, mod: e.metaKey || e.ctrlKey, shift: e.shiftKey };
+      drag = { type: 'edge', d, from: n, p0: sp || pos(d, n), startPort: sp, tp: null, tgt: {}, chain: [n], lp: p, mod: e.metaKey || e.ctrlKey, shift: e.shiftKey, viaS: holdS };
       return;
     }
     if (tool === 'select' && (e.ctrlKey || e.metaKey || e.altKey)) {
@@ -1770,7 +1779,7 @@ vp.addEventListener('pointerdown', (e) => {
   if (tool === 'edge') {
     const had = doc.diagrams.length;
     const d = pickDiagram(p), c = cellOf(d, p);
-    drag = { type: 'edge', d, from: at(d, c.r, c.c) || null, fromCell: c, p0: { x: d.ox + c.c * CW, y: d.oy + c.r * CH }, tp: null, tgt: {}, newDiagram: !had, chain: [], lp: p, mod: e.metaKey || e.ctrlKey, shift: e.shiftKey };
+    drag = { type: 'edge', d, from: at(d, c.r, c.c) || null, fromCell: c, p0: { x: d.ox + c.c * CW, y: d.oy + c.r * CH }, tp: null, tgt: {}, newDiagram: !had, chain: [], lp: p, mod: e.metaKey || e.ctrlKey, shift: e.shiftKey, viaS: holdS };
     return;
   }
   drag = { type: 'marq', p0: p, sx: e.clientX, sy: e.clientY, base: e.shiftKey ? new Set(sel) : new Set(), moved: false };
@@ -1808,9 +1817,9 @@ vp.addEventListener('pointermove', (e) => {
   if (!drag) {
     if (tool === 'edge' && mWatch(null, p)) render();
     if (wirePend && tool === 'edge') { const c = cellOf(wirePend.d, p); wirePend.tp = mHot && mHot.id !== wirePend.n.id ? { x: mHot.x, y: mHot.y } : { x: wirePend.d.ox + c.c * CW, y: wirePend.d.oy + c.r * CH }; render(); }
-    else if (tool === 'edge' && sel.size > 1) {
+    else if (tool === 'edge' && sel.size >= fanMin()) {
       const fd = doc.diagrams.find((d) => d.nodes.some((n) => sel.has(n.id)));
-      if (fd && fanSources(fd).length > 1) { const c = cellOf(fd, p), q = { x: fd.ox + c.c * CW, y: fd.oy + c.r * CH }; if (!fanTp || fanTp.x !== q.x || fanTp.y !== q.y) { fanTp = q; render(); } }
+      if (fd && fanSources(fd).length >= fanMin()) { const c = cellOf(fd, p), q = { x: fd.ox + c.c * CW, y: fd.oy + c.r * CH }; if (!fanTp || fanTp.x !== q.x || fanTp.y !== q.y) { fanTp = q; render(); } }
     } else if (fanTp) { fanTp = null; render(); }
     return;
   }
@@ -1906,7 +1915,11 @@ function endPointer(e) {
   if (!spaceDown) vp.classList.remove('panning');
   marq.style.display = 'none';
   if (D.type === 'pan') { if (D.touch && !D.moved && sel.size) { sel.clear(); render(); } return; }
-  if (D.type === 'edge') return finishEdge(D);
+  if (D.type === 'edge') { finishEdge(D); if (!holdS && tool === 'edge' && D.viaS) setTool('select'); return; }
+  if (D.type === 'marq' && D.right && !D.moved) {
+    if (D.ctx && findNode(D.ctx) || D.ctx && findEdge(D.ctx)) { if (!sel.has(D.ctx)) sel = new Set([D.ctx]); return openInsp(false); }
+    return render();
+  }
   if (D.type === 'ghost') { vp.classList.remove('copying'); return D.moved && D.cell ? finishGhost(D, toWorld(e.clientX, e.clientY)) : render(); }
   if (D.type === 'move' && D.dropId) {
     const d = D.d, n = d.nodes.find((x) => x.id === D.ids[0]), ed = d.edges.find((x) => x.id === D.dropId);
@@ -1993,9 +2006,9 @@ function finishEdge(D) {
       if (k > 1) toast(`${k} sources — click a target to wire them all`);
       return render();
     }
-    if (srcs.length > 1 && (!D.from || !sel.has(D.from.id))) {   // several sources: wire them all to the clicked node or cell
+    if (srcs.length >= fanMin() && (!D.from || !sel.has(D.from.id))) {   // several sources: wire them all to the clicked node or cell
       wirePend = null;
-      return fanTo(d, srcs, D.from || D.fromCell, D.shift);
+      return fanTo(d, srcs, D.from || D.fromCell, D.shift || holdS);
     }
     if (D.from) {
       if (P && P.n !== D.from) { wirePend = null; return linkChain(d, [P.n, D.from], { start: P.port, end: D.startPort }); }
@@ -2031,9 +2044,18 @@ function fanTo(d, srcs, target, keep) {
     if (!keep) sel.clear();
   });
   fanTp = null;
-  toast(made ? `Connected ${made} wire${made === 1 ? '' : 's'}${keep ? ' — Shift-click another target, or Esc' : ''}` : 'Already connected');
+  toast(made ? `Connected ${made} wire${made === 1 ? '' : 's'}${keep ? (holdS ? ' — click another target, or let go of S' : ' — Shift-click another target, or Esc') : ''}` : 'Already connected');
 }
 let fanTp = null;   // pointer cell while several sources wait for a target (ghost lines)
+// Holding S in the Select tool with nodes selected: the wire tool until S is let go, and one source is enough.
+const fanMin = () => (holdS ? 1 : 2);
+function releaseS() {
+  if (!holdS) return;
+  holdS = false; fanTp = null;
+  if (drag && drag.type === 'edge') return;   // finish the wire first (endPointer calls this again)
+  if (tool === 'edge') setTool('select');
+  render();
+}
 function linkChain(d, seq, ports) {
   ports = ports || {};
   mutate(() => {
@@ -2138,12 +2160,18 @@ window.addEventListener('keydown', (e) => {
   if (e.altKey && e.code === 'KeyN') { e.preventDefault(); return addTab(); }
   if (e.shiftKey && k.length === 1 && runKey('shift+' + k)) { e.preventDefault(); return; }
   if (e.shiftKey && k === 'p') { e.preventDefault(); return startShow(); }
+  if (k === 's' && !e.shiftKey && !e.altKey && (holdS || (tool === 'select' && !isLocked() && [...sel].some((id) => id[0] === 'n')))) {
+    // S held with nodes selected: wire them to whatever you click, until S is let go
+    e.preventDefault();
+    if (!holdS) { holdS = true; wirePend = null; setTool('edge'); render(); }
+    return;
+  }
   if (e.shiftKey && k === keys.curve) { e.preventDefault(); return toggleCurve(true); }
   if (runKey(k)) e.preventDefault();
 });
-window.addEventListener('keyup', (e) => { if (e.key === ' ') { spaceDown = false; if (!drag) vp.classList.remove('panning'); } });
+window.addEventListener('keyup', (e) => { if (e.key === ' ') { spaceDown = false; if (!drag) vp.classList.remove('panning'); } if (e.key.toLowerCase() === 's') releaseS(); });
 window.addEventListener('pagehide', save);
-window.addEventListener('blur', () => { spaceDown = false; vp.classList.remove('panning'); });
+window.addEventListener('blur', () => { spaceDown = false; vp.classList.remove('panning'); releaseS(); });
 window.addEventListener('resize', () => { applyCam(); syncPill($('#dock')); });
 
 function togglePreview() {
@@ -2719,7 +2747,8 @@ const DEMOS = {
     const ghost = (x, y) => `<path d="M${x} ${y}L165 55" fill="none" stroke="#5b5bd6" stroke-width="1.2" stroke-dasharray="3 3" opacity="0">${anim('opacity', '0;0;.7;.7;0;0', '0;.3;.36;.5;.54;1')}</path>`;
     return demoSvg(S3.map(([x, y], i) => ghost(x, y) + grow(x, y, i)).join('') + S3.map(([x, y, t], i) => sp(x, y, t) + ring(x, y, '0;0;1;1;0;0', `0;${(.08 + i * .07).toFixed(2)};${(.12 + i * .07).toFixed(2)};.52;.56;1`)).join('')
       + sp(165, 55, 'X') + `<circle cx="165" cy="55" r="13.5" fill="none" stroke="#5b5bd6" stroke-width="2" opacity="0">${anim('opacity', '0;0;1;0;0', '0;.46;.5;.6;1')}</circle>`
-      + `<g>${move('120 100;46 26;46 26;46 59;46 59;46 92;46 92;170 60;170 60;120 100', '0;.08;.12;.15;.19;.22;.26;.44;.6;1')}${CUR}</g>`);
+      + `<g>${move('120 100;46 26;46 26;46 59;46 59;46 92;46 92;170 60;170 60;120 100', '0;.08;.12;.15;.19;.22;.26;.44;.6;1')}${CUR}</g>`
+      + `<g transform="translate(196 8)"><rect width="18" height="18" rx="4" fill="#fff" stroke="#d8d8d2">${anim('fill', '#fff;#fff;#e6e6fb;#e6e6fb;#fff;#fff', '0;.3;.33;.6;.63;1')}</rect><text x="9" y="13" class="dkey">S</text></g>`);
   },
   wire: () => demoSvg(`<path d="M60 55H160" fill="none" stroke="#1d1d1f" stroke-width="1.5" stroke-dasharray="100" stroke-dashoffset="100">${anim('stroke-dashoffset', '100;100;0;0;100', '0;.2;.58;.9;1')}</path>` + sp(60, 55, 'Z') + sp(160, 55, 'X')
     + `<g>${move('64 59;64 59;164 59;164 59;64 59', '0;.2;.58;.9;1')}${CUR}</g>`),
@@ -2754,7 +2783,7 @@ const GUIDE_KEYS = () => [   // read when the guide opens (key bindings load lat
   ['select', [keys.select], 'Select and move', 'Click a node or wire to select it, drag to move. Drag on empty canvas to box-select. Click the selected item again to edit it.'],
   ['hand', [keys.hand, 'Space'], 'Hand / pan', 'Drag anywhere to move around the canvas. Holding Space does the same from any tool.'],
   ['place', [keys.Z, keys.X, keys.H, keys.N], 'Place Z, X, H, wire point', 'Pick a node type and click a cell. Click a wire to insert into it; click an existing node to select it. N places a wire point (boundary or corner).'],
-  ['fan', [keys.edge, 'click'], 'Connect many at once', `Select several nodes (Shift-click or box-select), pick the wire tool and click a node or an empty cell: every selected node is wired to it. In the wire tool ${IS_MAC ? '⌘' : 'Ctrl'}-click adds or removes a source; Shift-click a target keeps the sources for the next one.`],
+  ['fan', ['S', 'click'], 'Connect many at once', `In Select, box-select the nodes, then hold S and click a node or an empty cell: every selected node is wired to it (keep holding S for more targets). In the wire tool, hold the right button and drag to box-select; ${IS_MAC ? '⌘' : 'Ctrl'}-click adds or removes a source, Shift-click a target keeps the sources.`],
   ['wire', [keys.edge], 'Draw wires', 'Drag from one node to another (or to an empty cell). A stroke through several nodes connects them in order. Or click one node, then the other.'],
   ['curve', [keys.curve], 'Curve style', 'With a wire selected, each press cycles straight → bend left → bend right → s → cap → cup → C. Shift+S goes back. Drag the dot on a bend to change how far it bends.'],
   ['swap', ['W'], 'Swap two nodes', 'Select exactly two nodes and press W: they trade places and each takes over the other’s wires. With anything else selected, W picks the wire tool.'],
