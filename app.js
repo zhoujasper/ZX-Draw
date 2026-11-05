@@ -211,7 +211,14 @@ function sepGap(s) {
 const sepOf = (i) => (doc.seps[i] == null ? '=' : doc.seps[i]);
 
 // ---------- history / persistence ----------
-function snapshot() { if (isLocked()) { lockedNote(); throw LOCKED; } wsPrev = null; hist.push(JSON.stringify(doc)); if (hist.length > 300) hist.shift(); redoStack = []; }
+function snapshot() { if (isLocked()) { lockedNote(); throw LOCKED; } wsPrev = null; gridUndone = false; hist.push(JSON.stringify(doc)); if (hist.length > 300) hist.shift(); redoStack = []; }
+// Undo / redo carry the grid switch along: back to half cells → grid off; redo the widening → grid on again.
+let gridUndone = false;
+function gridFollowsDoc(isUndo) {
+  const half = doc.diagrams.some((d) => ZX.isHalf(d));
+  if (half && gridOn) { setGrid(false); if (isUndo) gridUndone = true; }
+  else if (!half && !gridOn && gridUndone && !isUndo) { setGrid(true); gridUndone = false; }
+}
 function save() {
   const t = curTab();
   if (t) { t.doc = doc; t.cam = { x: cam.x, y: cam.y, k: cam.k }; }
@@ -274,8 +281,8 @@ function undoPage() {
   loadTab();
   toast(`Removed “${t.name}”`);
 }
-function undo() { if (lockedStop()) return; if (!hist.length) return wsPrev ? restoreWorkspace() : curTab() && curTab().madeFrom && ws.tabs.length > 1 ? undoPage() : toast('Nothing to undo'); redoStack.push(JSON.stringify(doc)); doc = JSON.parse(hist.pop()); pruneSel(); commit(); }
-function redo() { if (lockedStop()) return; if (!redoStack.length) return; hist.push(JSON.stringify(doc)); doc = JSON.parse(redoStack.pop()); pruneSel(); commit(); }
+function undo() { if (lockedStop()) return; if (!hist.length) return wsPrev ? restoreWorkspace() : curTab() && curTab().madeFrom && ws.tabs.length > 1 ? undoPage() : toast('Nothing to undo'); redoStack.push(JSON.stringify(doc)); doc = JSON.parse(hist.pop()); pruneSel(); gridFollowsDoc(true); commit(); }
+function redo() { if (lockedStop()) return; if (!redoStack.length) return; hist.push(JSON.stringify(doc)); doc = JSON.parse(redoStack.pop()); pruneSel(); gridFollowsDoc(false); commit(); }
 
 // ---------- geometry of edges ----------
 // Matrix arrow ports: one per column of A on the input side, one per row on the output side.
@@ -4523,10 +4530,13 @@ function snapPageToGrid() {
   animate(() => { snapshot(); doc.diagrams.forEach((d) => { if (ZX.isHalf(d)) widenHalf(d); }); tidy(); }, 520);
   return true;
 }
-function toggleGrid() {
-  gridOn = !gridOn;
+function setGrid(on) {
+  gridOn = on;
   try { localStorage.setItem('zx-draw-grid-v1', gridOn ? '1' : '0'); } catch (_) {}
   syncGrid();
+}
+function toggleGrid() {
+  setGrid(!gridOn);
   const widened = snapPageToGrid();
   toast(gridOn ? (widened ? 'Grid on: widened so every node sits on a cell' : 'Grid on: nodes snap to whole cells') : 'Grid off: nodes can also sit half way between cells');
 }
