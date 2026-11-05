@@ -522,7 +522,7 @@ function render() {
         return;
       }
       const g = edgeGeom(d, e, A, B, dpos);
-      S.push(`<g class="edge${sel.has(e.id) ? ' sel' : ''}${drag && drag.dropId === e.id ? ' drop' : ''}${wireLook(e)}" data-edge="${e.id}"${e.col ? ` style="--wc:${e.col}"` : ''}><path class="hit" d="${g.d}"/><path class="wire-p" d="${g.d}"/>${g.h ? `<rect class="hbox" x="${g.m.x - 7}" y="${g.m.y - 7}" width="14" height="14"/>` : ''}</g>`);
+      S.push(`<g class="edge${sel.has(e.id) ? ' sel' : ''}${drag && drag.dropId === e.id ? ' drop' : ''}${wireLook(e)}" data-edge="${e.id}"${e.col ? ` style="--wc:${wcol(e.col)}"` : ''}><path class="hit" d="${g.d}"/><path class="wire-p" d="${g.d}"/>${g.h ? `<rect class="hbox" x="${g.m.x - 7}" y="${g.m.y - 7}" width="14" height="14"/>` : ''}</g>`);
       const bh = tool === 'select' && sel.size === 1 && sel.has(e.id) && (!tween || tweenK >= 1) && bendHandle(d, e, A, B, g);
       if (bh) {
         const on = drag && drag.type === 'bend' && drag.e === e;
@@ -867,16 +867,19 @@ function insertIntoEdge(d, e, p, n) {
   d.edges.push({ id: ZX.newId('e'), a: e.a, b: n.id, o: '', ...look }, { id: ZX.newId('e'), a: n.id, b: e.b, o: '', ...look });
 }
 // ---------- wire colour and line style (for your own eyes: no meaning, not in LaTeX) ----------
-const WIRE_COLS = ['', '#e5484d', '#f76b15', '#e2a336', '#30a46c', '#12a594', '#0090ff', '#5b5bd6', '#8e4ec6', '#d6409f'];
+const WIRE_COLS = ['', '#f07c7c', '#f4a261', '#e9c46a', '#7cc68d', '#5ec4b6', '#6cb2f0', '#8b8ff0', '#b58be8', '#ef8fc0'];
+// wires coloured with the first palette keep their slot
+const OLD_COLS = { '#e5484d': 1, '#f76b15': 2, '#e2a336': 3, '#30a46c': 4, '#12a594': 5, '#0090ff': 6, '#5b5bd6': 7, '#8e4ec6': 8, '#d6409f': 9 };
+const wcol = (c) => (c && OLD_COLS[c] ? WIRE_COLS[OLD_COLS[c]] : c || '');
 const WIRE_LS = [['', 'Solid', 'M2 8H22'], ['dash', 'Dashed', 'M2 8H22'], ['dot', 'Dotted', 'M2 8H22']];
 const wireLook = (e) => (e.col ? ' colored' : '') + (e.ls ? ' ls-' + e.ls : '');
 function wireLookRow() {
-  return `<div class="row wlook"><div class="wcols">${WIRE_COLS.map((c, i) => `<button class="wc${c ? '' : ' none'}" data-i="wcol" data-v="${c}" style="--c:${c || '#1f1f1f'}" title="${c ? 'Colour ' + i : 'Default'}"></button>`).join('')}</div><span class="vsep"></span>
+  return `<div class="row wlook"><div class="wcols">${WIRE_COLS.map((c, i) => `<button class="wc${c ? '' : ' none'}" data-i="wcol" data-v="${c}" style="--c:${c || '#3a3a3c'}" title="${c ? 'Colour ' + i : 'Default'}"></button>`).join('')}</div><span class="vsep"></span>
     <div class="seg sm" data-seg="ls">${WIRE_LS.map(([v, t, d]) => `<button data-i="wls" data-v="${v}" title="${t}"><svg width="24" height="16" viewBox="0 0 24 16"><path d="${d}" class="lsi${v ? ' ls-' + v : ''}"/></svg></button>`).join('')}</div></div>`;
 }
 function syncWireLook(edges) {
   if (!edges.length) return;
-  const col = edges.every((x) => (x.e.col || '') === (edges[0].e.col || '')) ? edges[0].e.col || '' : null;
+  const col = edges.every((x) => wcol(x.e.col) === wcol(edges[0].e.col)) ? wcol(edges[0].e.col) : null;
   const ls = edges.every((x) => (x.e.ls || '') === (edges[0].e.ls || '')) ? edges[0].e.ls || '' : null;
   insp.querySelectorAll('[data-i="wcol"]').forEach((b) => b.classList.toggle('on', b.dataset.v === col));
   insp.querySelectorAll('[data-i="wls"]').forEach((b) => b.classList.toggle('on', b.dataset.v === ls));
