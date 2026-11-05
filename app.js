@@ -4521,7 +4521,7 @@ function openPickPop(b) {
   el.className = 'pickpop';
   const draw = () => {
     el.innerHTML = `<div class="pk-head"><span>Box select picks</span><button class="pk-all"${pickAll() ? ' disabled' : ''}>All</button></div>`
-      + PICKS.map(([k, l, ic]) => `<label class="pk-row"><span class="pk-ic">${ic}</span><span class="pk-l">${l}</span><button class="pk-only" data-only="${k}" title="Only ${l.toLowerCase()}">Only</button><input type="checkbox" data-k="${k}"${selPick[k] !== false ? ' checked' : ''}></label>`).join('');
+      + PICKS.map(([k, l, ic]) => `<label class="pk-row"><span class="pk-ic">${ic}</span><span class="pk-l">${l}</span><span class="pk-sw"><button class="pk-only" data-only="${k}" title="Only ${l.toLowerCase()}">Only</button><input type="checkbox" data-k="${k}"${selPick[k] !== false ? ' checked' : ''}></span></label>`).join('');
   };
   draw();
   el.addEventListener('change', (e) => {
