@@ -96,7 +96,7 @@ const EXAMPLE = String.raw`\[
 let doc = { diagrams: [], seps: [] };
 let wirePend = null; // wire tool: first node of a click-click connection
 let sel = new Set(), tool = 'select', cam = { x: 0, y: 0, k: 1 }, preview = false;
-let drag = null, pinch = null, spaceDown = false, holdS = false, lastWorld = null, activeDi = 0, clip = null;
+let drag = null, pinch = null, spaceDown = false, holdS = false, nbOn = false, nbT = 0, lastWorld = null, activeDi = 0, clip = null;
 let hist = [], redoStack = [];
 const pointers = new Map();
 // A canvas holds several tabs (pages). `doc` is always the open tab's diagrams; each tab keeps
@@ -572,6 +572,7 @@ function render() {
   }
   if (drag && drag.type === 'ghost' && drag.tp) N.push(nodeHTML(drag.n, drag.tp, false).replace('class="node', 'class="node ghost'));
   world.innerHTML = F.join('') + `<svg class="edges" width="1" height="1">${S.join('')}</svg>` + N.join('') + (H.length ? `<svg class="edges handles" width="1" height="1">${H.join('')}</svg>` : '') + T.join('');
+  if (nbOn) showNb();
   $('#hint').hidden = doc.diagrams.some((d) => d.nodes.length);
   $('#dUndo').disabled = !hist.length;
   $('#dRedo').disabled = !redoStack.length;
@@ -4507,6 +4508,56 @@ dockEl.addEventListener('pointerup', dockUp);
 dockEl.addEventListener('pointercancel', dockUp);
 dockEl.addEventListener('dblclick', (e) => { if (e.target.closest('.dock-grip') && !dockPhone()) setDockSide(dockSide === 'bottom' ? 'left' : dockSide === 'left' ? 'right' : 'bottom'); });
 window.addEventListener('resize', () => { if (!dockDrag) { placeDock(); syncPill(dockEl); } });
+
+// ---------- hold ⌘ (Ctrl elsewhere): neighbours of the selected nodes pulse, one colour per selected node ----------
+const NB_COLS = ['#5b5bd6', '#f59e0b', '#10b981', '#ec4899', '#0ea5e9', '#8b5cf6', '#ef4444', '#14b8a6'];
+const nbKey = (e) => (IS_MAC ? e.key === 'Meta' : e.key === 'Control');
+function showNb() {
+  world.querySelectorAll('.nb-layer').forEach((x) => x.remove());
+  world.querySelectorAll('.edge.nb-wire').forEach((x) => { x.classList.remove('nb-wire'); x.style.removeProperty('--nbc'); x.style.removeProperty('--nbd'); });
+  if (!nbOn) return;
+  const srcs = [...sel].filter((id) => id[0] === 'n').map(findNode).filter(Boolean);
+  if (!srcs.length) return;
+  const rings = new Map();   // node id → { d, n, cols: [colour…], delay, src }
+  const ring = (d, n) => rings.get(n.id) || (rings.set(n.id, { d, n, cols: [], delay: null, src: null }), rings.get(n.id));
+  srcs.forEach(({ d, n }, i) => {
+    const c = NB_COLS[i % NB_COLS.length], delay = (i % NB_COLS.length) * 0.14;
+    ring(d, n).src = { c, delay };
+    d.edges.forEach((e) => {
+      if (e.a !== n.id && e.b !== n.id) return;
+      const o = e.a === n.id ? e.b : e.a;
+      if (o === n.id) return;
+      const m = d.nodes.find((x) => x.id === o); if (!m) return;
+      const r = ring(d, m);
+      if (!r.cols.includes(c)) r.cols.push(c);
+      if (r.delay === null) r.delay = delay;
+      const el = world.querySelector(`.edge[data-edge="${e.id}"]`);
+      if (el && !el.classList.contains('nb-wire')) { el.classList.add('nb-wire'); el.style.setProperty('--nbc', c); el.style.setProperty('--nbd', delay + 's'); }
+    });
+  });
+  const L = document.createElement('div');
+  L.className = 'nb-layer';
+  let h = '';
+  rings.forEach(({ d, n, cols, delay, src }) => {
+    const el = world.querySelector(`[data-node="${n.id}"]`); if (!el) return;
+    const p = pos(d, n), w = el.offsetWidth, ht = el.offsetHeight, br = getComputedStyle(el).borderRadius;
+    const box = `left:${p.x}px;top:${p.y}px;width:${w}px;height:${ht}px;border-radius:${br}`;
+    if (src) h += `<div class="nb-src" style="${box};--nbc:${src.c};--nbd:${src.delay}s"></div>`;
+    if (cols.length) h += `<div class="nb-ring" style="${box};--nbd:${delay}s;--nbs:${cols.map((c, k) => `0 0 0 ${3 + k * 3}px ${c}`).join(',')};--nbg:${cols[0]}"></div>`;
+  });
+  L.innerHTML = h;
+  world.appendChild(L);
+}
+function setNb(on) { clearTimeout(nbT); if (nbOn === on) return; nbOn = on; showNb(); }
+window.addEventListener('keydown', (e) => {
+  if (nbKey(e)) {
+    const ae = document.activeElement;
+    if (e.repeat || nbOn || (ae && /INPUT|TEXTAREA|SELECT/.test(ae.tagName)) || ![...sel].some((id) => id[0] === 'n')) return;
+    clearTimeout(nbT); nbT = setTimeout(() => setNb(true), 160);   // a short wait so ⌘C, ⌘Z … do not flash
+  } else if (e.metaKey || e.ctrlKey) setNb(false);
+}, true);
+window.addEventListener('keyup', (e) => { if (nbKey(e)) setNb(false); }, true);
+window.addEventListener('blur', () => setNb(false));
 
 // ---------- what box-select picks (click V again, or right-click it) ----------
 const PICK_KEY = 'zx-draw-pick-v1';
