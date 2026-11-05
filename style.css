@@ -1065,3 +1065,4 @@ select.sel { height: 30px; border-radius: 8px; border: 1px solid var(--line); ba
 @keyframes pkonly { 40% { transform: scale(.85); background: rgba(91,91,214,.2); color: var(--accent); } }
 @media (hover: none) { .pk-sw { gap: 8px; } .pk-only { position: static; margin: 0; box-shadow: none; background: var(--soft); color: var(--muted); opacity: 1; transform: none; pointer-events: auto; } }
 #insp button:focus:not(:focus-visible) { outline: none; }
+.chip.glyph { min-width: 32px; padding: 0 8px; font-size: 15px; line-height: 1; font-family: 'Cambria Math', 'STIX Two Math', 'Times New Roman', serif; }

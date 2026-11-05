@@ -64,6 +64,9 @@ const CURVES = [
   ['C', 'C-curve (C)', curveIco('<path d="M17 2C5 2 5 16 17 16"/>')],
 ];
 const PHASES = [['π', '\\pi'], ['π/2', '\\frac{\\pi}{2}'], ['−π/2', '-\\frac{\\pi}{2}'], ['π/4', '\\frac{\\pi}{4}'], ['α', '\\alpha'], ['−α', '-\\alpha'], ['β', '\\beta'], ['α⊕β', '\\alpha\\oplus\\beta'], ['0', '']];
+// quick picks for a text cell (T): dots first, then labels common next to ZX diagrams
+const TEXTS = [['⋮', '\\vdots', 'Vertical dots \\vdots'], ['⋯', '\\cdots', 'Centred dots \\cdots'], ['⋱', '\\ddots', 'Diagonal dots \\ddots'], ['…', '\\ldots', 'Low dots \\ldots'],
+  ['⊗', '\\otimes', 'Tensor \\otimes'], ['⊗n', '\\otimes n', 'n copies \\otimes n'], ['n', 'n', 'Label n'], ['m', 'm', 'Label m'], ['k', 'k', 'Label k']];
 const RULES = ['(sp)', '(id)', '(\\pi)', '(cc)', '(b)', '(hh)', '(sc)', '(eu)', '(h)', '(c)'];
 const RELS = [['None', ''], ['=', '='], [':=', ':='], ['∝', '\\propto'], ['≈', '\\approx'], ['⇒', '\\Rightarrow']];
 
@@ -1345,7 +1348,9 @@ function buildInsp(nodes, edges) {
         <button class="ib danger" data-i="del" title="Delete (⌫)">${I.trash}</button></div>
       <div class="collapse" data-c="phase"><div>
         <div class="row"><label class="field"><span>Phase</span><input data-i="label" placeholder="LaTeX, e.g. \\pi" spellcheck="false" autocomplete="off"></label></div>
-        <div class="chips">${PHASES.map(([l, v]) => `<button class="chip" data-i="phase" data-v="${esc(v)}">${l}</button>`).join('')}</div>
+        <div class="chips">${nodes[0].n.t === 'T'
+          ? TEXTS.map(([l, v, t]) => `<button class="chip glyph" data-i="phase" data-v="${esc(v)}" title="${esc(t)}">${l}</button>`).join('')
+          : PHASES.map(([l, v]) => `<button class="chip" data-i="phase" data-v="${esc(v)}">${l}</button>`).join('')}</div>
       </div></div>`;
   }
   const self = edges[0].e.a === edges[0].e.b;
