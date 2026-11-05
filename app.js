@@ -3612,6 +3612,7 @@ function loadTab(fade = true) {
   if (t.cam) { cancelAnimationFrame(camAnim); cam = { ...t.cam }; applyCam(); } else fit(true);
   save();
   drawTabs();
+  if (gridOn && doc.diagrams.some((d) => ZX.isHalf(d))) setTimeout(() => { if (curTab() === t) snapPageToGrid(); }, 260);   // a page left with half cells
 }
 function switchTab(i) {
   if (i === ws.active || !ws.tabs[i]) return;
@@ -4507,11 +4508,27 @@ function syncGrid() {
   if (b) { b.classList.toggle('on', gridOn); b.setAttribute('aria-checked', gridOn ? 'true' : 'false'); }
   vp.classList.toggle('nogrid', !gridOn);
 }
+// Grid back on: spread each axis just enough that every node lands on a whole cell. Order, rows and
+// columns stay as they are; a half step becomes one cell, longer gaps keep their (rounded) length.
+function widenHalf(d) {
+  ['r', 'c'].forEach((k) => {
+    const vals = [...new Set(d.nodes.map((n) => n[k]))].sort((a, b) => a - b), to = new Map();
+    let cur = Math.floor(vals[0]);
+    vals.forEach((v, i) => { if (i) cur += Math.max(1, Math.round(v - vals[i - 1])); to.set(v, cur); });
+    d.nodes.forEach((n) => { n[k] = to.get(n[k]); });
+  });
+}
+function snapPageToGrid() {
+  if (!gridOn || isLocked() || !doc.diagrams.some((d) => ZX.isHalf(d))) return false;
+  animate(() => { snapshot(); doc.diagrams.forEach((d) => { if (ZX.isHalf(d)) widenHalf(d); }); tidy(); }, 520);
+  return true;
+}
 function toggleGrid() {
   gridOn = !gridOn;
   try { localStorage.setItem('zx-draw-grid-v1', gridOn ? '1' : '0'); } catch (_) {}
   syncGrid();
-  toast(gridOn ? 'Grid on: nodes snap to whole cells' : 'Grid off: nodes can also sit half way between cells');
+  const widened = snapPageToGrid();
+  toast(gridOn ? (widened ? 'Grid on: widened so every node sits on a cell' : 'Grid on: nodes snap to whole cells') : 'Grid off: nodes can also sit half way between cells');
 }
 $('#btnGrid').onclick = (e) => { e.currentTarget.blur(); toggleGrid(); };
 syncGrid();
