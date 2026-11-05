@@ -1004,3 +1004,52 @@ select.sel { height: 30px; border-radius: 8px; border: 1px solid var(--line); ba
 .ib.m-conv { width: 34px; color: var(--ink); animation: mconv .3s cubic-bezier(.3,1.5,.5,1); }
 .ib.m-conv:hover { color: var(--accent); background: rgba(91,91,214,.1); }
 @keyframes mconv { from { transform: scale(.6); opacity: 0; } }
+
+/* ---------- box-select filter (click V again / right-click V) ---------- */
+.tool.filt::after { content: ''; position: absolute; top: 4px; right: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 1.5px #fff; animation: pkdot .3s cubic-bezier(.3,1.6,.5,1); }
+@keyframes pkdot { from { transform: scale(0); } }
+.pickpop { position: fixed; z-index: 85; width: 216px; padding: 6px; background: #fff; border-radius: 13px; box-shadow: 0 14px 36px rgba(0,0,0,.16), 0 0 0 1px rgba(0,0,0,.05);
+  opacity: 0; transform: translateY(10px) scale(.86); transition: opacity .16s, transform .32s cubic-bezier(.22,1.25,.36,1); }
+.pickpop[data-side="left"] { transform: translateX(-10px) scale(.86); }
+.pickpop[data-side="right"] { transform: translateX(10px) scale(.86); }
+.pickpop.show { opacity: 1; transform: none; }
+.pickpop .pk-row { opacity: 0; transform: translateY(4px); transition: opacity .2s, transform .25s cubic-bezier(.22,1,.36,1), background .1s; }
+.pickpop.show .pk-row { opacity: 1; transform: none; }
+.pickpop.show .pk-row:nth-child(2) { transition-delay: .02s; } .pickpop.show .pk-row:nth-child(3) { transition-delay: .04s; }
+.pickpop.show .pk-row:nth-child(4) { transition-delay: .06s; } .pickpop.show .pk-row:nth-child(5) { transition-delay: .08s; }
+.pickpop.show .pk-row:nth-child(6) { transition-delay: .10s; } .pickpop.show .pk-row:nth-child(7) { transition-delay: .12s; }
+.pickpop.show .pk-row:nth-child(8) { transition-delay: .14s; }
+.pk-head { display: flex; align-items: center; justify-content: space-between; padding: 4px 6px 6px 8px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.pk-all { border: 0; background: none; font: inherit; font-size: 12px; color: var(--accent); cursor: pointer; padding: 2px 6px; border-radius: 6px; transition: opacity .15s, background .1s; }
+.pk-all:hover:not(:disabled) { background: rgba(91,91,214,.1); }
+.pk-all:disabled { opacity: 0; pointer-events: none; }
+.pk-row { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; font-size: 13px; cursor: pointer; }
+.pk-row:hover { background: var(--soft); }
+.pk-ic { width: 16px; display: grid; place-items: center; flex: none; }
+.pk-l { flex: 1; }
+.pk-t { font-weight: 700; line-height: 1; }
+.pk-m { width: 14px; height: 3px; background: #1f1f1f; border-radius: 2px; position: relative; }
+.pk-m::after { content: ''; position: absolute; right: -1px; top: -3px; border: 4.5px solid transparent; border-left: 5px solid #1f1f1f; border-right: 0; }
+.pk-w { width: 14px; height: 1.6px; background: #1f1f1f; border-radius: 1px; }
+@media (max-width: 640px) { .pickpop { width: min(260px, calc(100vw - 16px)); } .pk-row { padding: 9px 8px; } }
+
+/* ---------- wire colour + line style ---------- */
+.edge.colored .wire-p, .edge.colored:hover .wire-p { stroke: var(--wc); }
+.edge.colored.sel .wire-p { stroke: var(--wc); stroke-width: 2.2; }
+.edge.colored.sel .hit { stroke: rgba(91,91,214,.16); }
+.edge.colored:hover:not(.sel) .hit { stroke: rgba(0,0,0,.05); }
+.edge.ls-dash .wire-p { stroke-dasharray: 6 4; }
+.edge.ls-dot .wire-p { stroke-dasharray: 0 4; stroke-width: 2.2; }
+.edge.ls-dot.sel .wire-p { stroke-width: 2.8; }
+.wlook { margin-top: 6px; gap: 6px; }
+.wcols { display: flex; gap: 3px; flex: 1; flex-wrap: wrap; }
+.wc { width: 20px; height: 20px; border-radius: 50%; border: 0; padding: 0; cursor: pointer; background: var(--c); position: relative; flex: none;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.08); transition: transform .15s cubic-bezier(.3,1.6,.5,1), box-shadow .15s; }
+.wc:hover { transform: scale(1.12); }
+.wc:active { transform: scale(.9); }
+.wc.on { box-shadow: 0 0 0 2px #fff, 0 0 0 3.5px var(--c); }
+.wc.none.on { box-shadow: 0 0 0 2px #fff, 0 0 0 3.5px #1f1f1f; }
+.lsi { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.lsi.ls-dash { stroke-dasharray: 5 3.5; }
+.lsi.ls-dot { stroke-dasharray: 0 4; stroke-width: 2.4; }
+@media (max-width: 640px) { .wc { width: 24px; height: 24px; } }

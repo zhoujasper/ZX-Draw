@@ -522,7 +522,7 @@ function render() {
         return;
       }
       const g = edgeGeom(d, e, A, B, dpos);
-      S.push(`<g class="edge${sel.has(e.id) ? ' sel' : ''}${drag && drag.dropId === e.id ? ' drop' : ''}" data-edge="${e.id}"><path class="hit" d="${g.d}"/><path class="wire-p" d="${g.d}"/>${g.h ? `<rect class="hbox" x="${g.m.x - 7}" y="${g.m.y - 7}" width="14" height="14"/>` : ''}</g>`);
+      S.push(`<g class="edge${sel.has(e.id) ? ' sel' : ''}${drag && drag.dropId === e.id ? ' drop' : ''}${wireLook(e)}" data-edge="${e.id}"${e.col ? ` style="--wc:${e.col}"` : ''}><path class="hit" d="${g.d}"/><path class="wire-p" d="${g.d}"/>${g.h ? `<rect class="hbox" x="${g.m.x - 7}" y="${g.m.y - 7}" width="14" height="14"/>` : ''}</g>`);
       const bh = tool === 'select' && sel.size === 1 && sel.has(e.id) && (!tween || tweenK >= 1) && bendHandle(d, e, A, B, g);
       if (bh) {
         const on = drag && drag.type === 'bend' && drag.e === e;
@@ -863,7 +863,23 @@ function insertIntoEdge(d, e, p, n) {
   n.r = cell.r; n.c = cell.c;
   if (!d.nodes.includes(n)) d.nodes.push(n);
   d.edges = d.edges.filter((x) => x !== e);
-  d.edges.push({ id: ZX.newId('e'), a: e.a, b: n.id, o: '' }, { id: ZX.newId('e'), a: n.id, b: e.b, o: '' });
+  const look = { ...(e.col ? { col: e.col } : {}), ...(e.ls ? { ls: e.ls } : {}) };   // the halves keep the wire's colour and style
+  d.edges.push({ id: ZX.newId('e'), a: e.a, b: n.id, o: '', ...look }, { id: ZX.newId('e'), a: n.id, b: e.b, o: '', ...look });
+}
+// ---------- wire colour and line style (for your own eyes: no meaning, not in LaTeX) ----------
+const WIRE_COLS = ['', '#e5484d', '#f76b15', '#e2a336', '#30a46c', '#12a594', '#0090ff', '#5b5bd6', '#8e4ec6', '#d6409f'];
+const WIRE_LS = [['', 'Solid', 'M2 8H22'], ['dash', 'Dashed', 'M2 8H22'], ['dot', 'Dotted', 'M2 8H22']];
+const wireLook = (e) => (e.col ? ' colored' : '') + (e.ls ? ' ls-' + e.ls : '');
+function wireLookRow() {
+  return `<div class="row wlook"><div class="wcols">${WIRE_COLS.map((c, i) => `<button class="wc${c ? '' : ' none'}" data-i="wcol" data-v="${c}" style="--c:${c || '#1f1f1f'}" title="${c ? 'Colour ' + i : 'Default'}"></button>`).join('')}</div><span class="vsep"></span>
+    <div class="seg sm" data-seg="ls">${WIRE_LS.map(([v, t, d]) => `<button data-i="wls" data-v="${v}" title="${t}"><svg width="24" height="16" viewBox="0 0 24 16"><path d="${d}" class="lsi${v ? ' ls-' + v : ''}"/></svg></button>`).join('')}</div></div>`;
+}
+function syncWireLook(edges) {
+  if (!edges.length) return;
+  const col = edges.every((x) => (x.e.col || '') === (edges[0].e.col || '')) ? edges[0].e.col || '' : null;
+  const ls = edges.every((x) => (x.e.ls || '') === (edges[0].e.ls || '')) ? edges[0].e.ls || '' : null;
+  insp.querySelectorAll('[data-i="wcol"]').forEach((b) => b.classList.toggle('on', b.dataset.v === col));
+  insp.querySelectorAll('[data-i="wls"]').forEach((b) => b.classList.toggle('on', b.dataset.v === ls));
 }
 // Take node n out of the diagram; if it sat on a wire (one in, one out) the wire is rejoined.
 function detachNode(d, n) {
@@ -1303,6 +1319,8 @@ function updateInspector() {
   insp.hidden = false;
   insp.classList.toggle('mpanel', nodes.length === 1 && !edges.length && nodes[0].n.t === 'M');
   refreshInsp(nodes, edges);
+  syncWireLook(edges);
+  syncAllPills(insp);
   positionInsp();
   if (mFocus) { mFocus = false; const ta = insp.querySelector('textarea[data-i="mtext"]'); if (ta && !isPhone()) setTimeout(() => ta.focus(), 60); }
 }
@@ -1313,7 +1331,7 @@ function buildInsp(nodes, edges) {
       ${zx ? `<button class="ib" data-i="swap" title="Swap Z ↔ X colour (C)">${I.swap}</button>` : ''}
       ${selBlock() ? `<button class="ib m-conv" data-i="tomat" title="Convert to matrix arrow (⇧A)">${I.marrow}</button>` : ''}
       ${nodes.length ? `<button class="ib" data-i="copy" title="Copy (⌘C)">${I.copy}</button>` : ''}
-      <button class="ib danger" data-i="del" title="Delete (⌫)">${I.trash}</button></div>`;
+      <button class="ib danger" data-i="del" title="Delete (⌫)">${I.trash}</button></div>${edges.length ? wireLookRow() : ''}`;
   }
   if (nodes.length && nodes[0].n.t === 'M') return buildMatInsp(nodes[0].n);
   if (nodes.length) {
@@ -1334,6 +1352,7 @@ function buildInsp(nodes, edges) {
       <button class="ib" data-i="hbox" title="Hadamard box on this wire (H style)"><span class="sw H"></span></button>
       ${self ? '' : `<button class="ib" data-i="rev" title="Reverse direction (changes which cell the \\ar lives in)">${I.rev}</button>`}
       <button class="ib danger" data-i="del" title="Delete (⌫)">${I.trash}</button></div>
+    ${wireLookRow()}
     <div class="row"><label class="field"><span>TikZ</span><input data-i="opts" placeholder="e.g. bend left=40, H" spellcheck="false" autocomplete="off"></label></div>`;
 }
 function refreshInsp(nodes, edges) {
@@ -1544,6 +1563,7 @@ insp.addEventListener('click', (ev) => {
   if (a === 'loop') return mutate(() => { const { n, d } = nodes[0]; d.edges.push({ id: ZX.newId('e'), a: n.id, b: n.id, o: 'loop above' }); });
   if (a === 'curve') return mutate(() => setCurve(edges[0].e, v));
   if (a === 'hbox') return mutate(() => toggleTok(edges[0].e, 'H'));
+  if (a === 'wcol' || a === 'wls') { const f = a === 'wcol' ? 'col' : 'ls'; return mutate(() => edges.forEach(({ e }) => { if (v) e[f] = v; else delete e[f]; })); }
   if (a === 'rev') return mutate(() => {
     const e = edges[0].e; [e.a, e.b] = [e.b, e.a];
     e.o = ZX.splitOpts(e.o).map((t) => t.replace(/^bend\s+(left|right)/, (_, s) => 'bend ' + (s === 'left' ? 'right' : 'left'))).join(', ');
@@ -1896,8 +1916,8 @@ vp.addEventListener('pointermove', (e) => {
     const a = drag.p0, wx0 = Math.min(a.x, p.x), wx1 = Math.max(a.x, p.x), wy0 = Math.min(a.y, p.y), wy1 = Math.max(a.y, p.y);
     const s = new Set(drag.base), inside = new Set();
     doc.diagrams.forEach((d) => {
-      d.nodes.forEach((n) => { const q = pos(d, n); if (q.x >= wx0 && q.x <= wx1 && q.y >= wy0 && q.y <= wy1) { s.add(n.id); inside.add(n.id); } });
-      d.edges.forEach((ed) => { if (inside.has(ed.a) && inside.has(ed.b)) s.add(ed.id); });
+      d.nodes.forEach((n) => { const q = pos(d, n); if (q.x >= wx0 && q.x <= wx1 && q.y >= wy0 && q.y <= wy1) { inside.add(n.id); if (selPick[pickKind(n.t)] !== false) s.add(n.id); } });
+      if (selPick.wire !== false) d.edges.forEach((ed) => { if (inside.has(ed.a) && inside.has(ed.b)) s.add(ed.id); });
     });
     sel = s;
     inspOpen = false;
@@ -3790,7 +3810,8 @@ function initChrome() {
   $('#btnImport').onclick = () => openImport();
   $('#btnExport').onclick = () => openExport();
   $('#dUndo').onclick = undo; $('#dRedo').onclick = redo; $('#dDel').onclick = deleteSel;
-  document.querySelectorAll('.tool[data-tool]').forEach((b) => { b.onclick = () => { setTool(b.dataset.tool); b.blur(); }; });
+  document.querySelectorAll('.tool[data-tool]').forEach((b) => { b.onclick = () => { const was = tool; setTool(b.dataset.tool); b.blur(); if (b.dataset.tool === 'select' && was === 'select') togglePickPop(b); }; });
+{ const vb = document.querySelector('.tool[data-tool="select"]'); vb.addEventListener('contextmenu', (e) => { e.preventDefault(); if (tool !== 'select') setTool('select'); openPickPop(vb); }); }
   // drop a .tex file anywhere
   window.addEventListener('dragover', (e) => e.preventDefault());
   window.addEventListener('drop', (e) => {
@@ -4450,6 +4471,58 @@ dockEl.addEventListener('pointerup', dockUp);
 dockEl.addEventListener('pointercancel', dockUp);
 dockEl.addEventListener('dblclick', (e) => { if (e.target.closest('.dock-grip') && !dockPhone()) setDockSide(dockSide === 'bottom' ? 'left' : dockSide === 'left' ? 'right' : 'bottom'); });
 window.addEventListener('resize', () => { if (!dockDrag) { placeDock(); syncPill(dockEl); } });
+
+// ---------- what box-select picks (click V again, or right-click it) ----------
+const PICK_KEY = 'zx-draw-pick-v1';
+const PICKS = [['Z', 'Z spiders', '<span class="sw Z"></span>'], ['X', 'X spiders', '<span class="sw X"></span>'], ['H', 'H boxes', '<span class="sw H"></span>'],
+  ['pt', 'Wire points & dots', '<span class="sw N"></span>'], ['T', 'Text cells', '<span class="pk-t">⋮</span>'], ['M', 'Matrix arrows', '<span class="pk-m"></span>'], ['wire', 'Wires', '<span class="pk-w"></span>']];
+const pickKind = (t) => (t === 'N' || t === 'P' ? 'pt' : t);
+let selPick = {};
+try { selPick = JSON.parse(localStorage.getItem(PICK_KEY) || '{}') || {}; } catch (_) {}
+let pickEl = null;
+const pickAll = () => PICKS.every(([k]) => selPick[k] !== false);
+function syncPickDot() { const vb = document.querySelector('.tool[data-tool="select"]'); if (vb) vb.classList.toggle('filt', !pickAll()); }
+function closePickPop() { if (!pickEl) return; const el = pickEl; pickEl = null; el.classList.remove('show'); setTimeout(() => el.remove(), 180); }
+function togglePickPop(b) { pickEl ? closePickPop() : openPickPop(b); }
+function openPickPop(b) {
+  closePickPop(); closeCtx();
+  const el = document.createElement('div');
+  el.className = 'pickpop';
+  const draw = () => {
+    el.innerHTML = `<div class="pk-head"><span>Box select picks</span><button class="pk-all"${pickAll() ? ' disabled' : ''}>All</button></div>`
+      + PICKS.map(([k, l, ic]) => `<label class="pk-row"><span class="pk-ic">${ic}</span><span class="pk-l">${l}</span><input type="checkbox" data-k="${k}"${selPick[k] !== false ? ' checked' : ''}></label>`).join('');
+  };
+  draw();
+  el.addEventListener('change', (e) => {
+    const k = e.target.dataset.k; if (!k) return;
+    if (e.target.checked) delete selPick[k]; else selPick[k] = false;
+    if (PICKS.every(([q]) => selPick[q] === false)) { delete selPick[k]; e.target.checked = true; toast('Keep at least one'); }
+    try { localStorage.setItem(PICK_KEY, JSON.stringify(selPick)); } catch (_) {}
+    el.querySelector('.pk-all').disabled = pickAll(); syncPickDot();
+  });
+  el.addEventListener('click', (e) => {
+    if (!e.target.closest('.pk-all')) return;
+    selPick = {}; try { localStorage.removeItem(PICK_KEY); } catch (_) {}
+    el.querySelectorAll('input[data-k]').forEach((i) => { i.checked = true; }); e.target.disabled = true; syncPickDot();
+  });
+  el.addEventListener('contextmenu', (e) => e.preventDefault());
+  document.body.appendChild(el);
+  // pops out of the button: up from a bottom dock, sideways from a side dock
+  const r = b.getBoundingClientRect(), w = el.offsetWidth, h = el.offsetHeight, side = dockPhone() ? 'bottom' : dockSide, gap = 10;
+  let x, y;
+  if (side === 'left') { x = r.right + gap; y = r.top + r.height / 2 - h / 2; }
+  else if (side === 'right') { x = r.left - gap - w; y = r.top + r.height / 2 - h / 2; }
+  else { x = r.left + r.width / 2 - w / 2; y = r.top - gap - h; }
+  x = Math.max(8, Math.min(innerWidth - w - 8, x)); y = Math.max(8, Math.min(innerHeight - h - 8, y));
+  Object.assign(el.style, { left: x + 'px', top: y + 'px', transformOrigin: `${r.left + r.width / 2 - x}px ${r.top + r.height / 2 - y}px` });
+  el.dataset.side = side;
+  requestAnimationFrame(() => el.classList.add('show'));
+  pickEl = el;
+}
+document.addEventListener('pointerdown', (e) => { if (pickEl && !pickEl.contains(e.target) && !e.target.closest('.tool[data-tool="select"]')) closePickPop(); }, true);
+document.addEventListener('keydown', (e) => { if (pickEl && e.key === 'Escape') { e.stopImmediatePropagation(); closePickPop(); } }, true);
+window.addEventListener('resize', closePickPop);
+syncPickDot();
 
 // ---------- page tab menu (right-click / long-press) ----------
 let ctxEl = null;
