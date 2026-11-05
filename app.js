@@ -1938,7 +1938,7 @@ vp.addEventListener('pointermove', (e) => {
     const a = drag.p0, wx0 = Math.min(a.x, p.x), wx1 = Math.max(a.x, p.x), wy0 = Math.min(a.y, p.y), wy1 = Math.max(a.y, p.y);
     const s = new Set(drag.base), inside = new Set();
     doc.diagrams.forEach((d) => {
-      d.nodes.forEach((n) => { const q = pos(d, n); if (q.x >= wx0 && q.x <= wx1 && q.y >= wy0 && q.y <= wy1) { inside.add(n.id); if (selPick[pickKind(n.t)] !== false) s.add(n.id); } });
+      d.nodes.forEach((n) => { const q = pos(d, n); if (q.x >= wx0 && q.x <= wx1 && q.y >= wy0 && q.y <= wy1) { inside.add(n.id); if (selPick[pickKind(n.t)] !== false && !(drag.right && n.t === 'T')) s.add(n.id); } });   // right-drag picks wire sources: never text cells
       if (selPick.wire !== false) d.edges.forEach((ed) => { if (inside.has(ed.a) && inside.has(ed.b)) s.add(ed.id); });
     });
     // a wire is picked as soon as any part of it lies in the box (points sampled once per drag from the drawn paths)
@@ -2089,7 +2089,7 @@ function finishEdge(D) {
 // wire consecutive items of seq (nodes, or {r,c} cells that become wire points).
 // Every wire asked for is added, even next to an existing one (parallel wires matter in ZX, e.g. Hopf).
 // ---------- many sources → one target (wire tool) ----------
-const fanSources = (d) => [...sel].filter((id) => id[0] === 'n').map(findNode).filter((x) => x && x.d === d).map((x) => x.n);
+const fanSources = (d) => [...sel].filter((id) => id[0] === 'n').map(findNode).filter((x) => x && x.d === d && x.n.t !== 'T').map((x) => x.n);   // text cells are never wired
 function fanTo(d, srcs, target, keep) {
   let made = 0;
   mutate(() => {
@@ -2217,7 +2217,7 @@ window.addEventListener('keydown', (e) => {
   if (e.altKey && e.code === 'KeyN') { e.preventDefault(); return addTab(); }
   if (e.shiftKey && k.length === 1 && runKey('shift+' + k)) { e.preventDefault(); return; }
   if (e.shiftKey && k === 'p') { e.preventDefault(); return startShow(); }
-  if (k === 's' && !e.shiftKey && !e.altKey && (holdS || (tool === 'select' && !isLocked() && [...sel].some((id) => id[0] === 'n')))) {
+  if (k === 's' && !e.shiftKey && !e.altKey && (holdS || (tool === 'select' && !isLocked() && [...sel].some((id) => { const f = id[0] === 'n' && findNode(id); return f && f.n.t !== 'T'; })))) {
     // S held with nodes selected: wire them to whatever you click, until S is let go
     e.preventDefault();
     if (!holdS) { holdS = true; wirePend = null; setTool('edge'); render(); }
