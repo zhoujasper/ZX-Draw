@@ -2062,7 +2062,8 @@ function finishEdge(D) {
       if (k > 1) toast(`${k} sources — click a target to wire them all`);
       return render();
     }
-    if (srcs.length >= fanMin() && (!D.from || !sel.has(D.from.id))) {   // several sources: wire them all to the clicked node or cell
+    const others = D.from ? srcs.filter((n) => n !== D.from) : srcs;
+    if (srcs.length >= fanMin() && others.length) {   // several sources: wire them all to the clicked node or cell (a selected target just wires the others)
       wirePend = null;
       return fanTo(d, srcs, D.from || D.fromCell, D.shift || holdS);
     }
@@ -2085,7 +2086,7 @@ function finishEdge(D) {
   linkChain(d, seq, { start: D.startPort, end: t.node && t.node.t === 'M' ? D.port : null });
 }
 // wire consecutive items of seq (nodes, or {r,c} cells that become wire points).
-// A plain two-point wire is always added; a pass-through chain skips pairs that are already wired.
+// Every wire asked for is added, even next to an existing one (parallel wires matter in ZX, e.g. Hopf).
 // ---------- many sources → one target (wire tool) ----------
 const fanSources = (d) => [...sel].filter((id) => id[0] === 'n').map(findNode).filter((x) => x && x.d === d).map((x) => x.n);
 function fanTo(d, srcs, target, keep) {
@@ -2094,13 +2095,13 @@ function fanTo(d, srcs, target, keep) {
     let t = target.id ? target : at(d, target.r, target.c);
     if (!t) { t = makeNode('N', target.r, target.c); d.nodes.push(t); }
     srcs.forEach((s) => {
-      if (s === t || d.edges.some((e) => (e.a === s.id && e.b === t.id) || (e.a === t.id && e.b === s.id))) return;
+      if (s === t) return;
       d.edges.push({ id: ZX.newId('e'), a: s.id, b: t.id, o: '' }); made++;
     });
     if (!keep) sel.clear();
   });
   fanTp = null;
-  toast(made ? `Connected ${made} wire${made === 1 ? '' : 's'}${keep ? (holdS ? ' — click another target, or let go of S' : ' — Shift-click another target, or Esc') : ''}` : 'Already connected');
+  toast(made ? `Connected ${made} wire${made === 1 ? '' : 's'}${keep ? (holdS ? ' — click another target, or let go of S' : ' — Shift-click another target, or Esc') : ''}` : 'Nothing to connect');
 }
 let fanTp = null;   // pointer cell while several sources wait for a target (ghost lines)
 // Holding S in the Select tool with nodes selected: the wire tool until S is let go, and one source is enough.
@@ -2124,7 +2125,6 @@ function linkChain(d, seq, ports) {
     for (let i = 0; i + 1 < ns.length; i++) {
       const A = ns[i], B = ns[i + 1];
       if (A === B) continue;
-      if (ns.length > 2 && d.edges.some((e) => (e.a === A.id && e.b === B.id) || (e.a === B.id && e.b === A.id))) continue;
       if (A.t === 'M' && B.t === 'M') { bundleArrows(d, A, B); continue; }
       const eid = ZX.newId('e');
       d.edges.push({ id: eid, a: A.id, b: B.id, o: '' });
