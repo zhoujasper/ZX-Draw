@@ -2835,6 +2835,64 @@ const DEMOS = {
   drop: () => demoSvg(`<path d="M20 70H200" fill="none" stroke="#1d1d1f" stroke-width="1.5">${anim('stroke', '#1d1d1f;#1d1d1f;#5b5bd6;#1d1d1f;#1d1d1f', '0;.35;.45;.55;1')}${anim('stroke-width', '1.5;1.5;4;1.5;1.5', '0;.35;.45;.55;1')}</path>` + pt(20, 70) + pt(200, 70)
     + `<g>${move('0 0;0 0;0 50;0 50;0 0', '0;.1;.5;.9;1')}${sp(110, 20, 'Z')}</g>` + `<g>${move('114 24;114 24;114 74;114 74;114 24', '0;.1;.5;.9;1')}${CUR}</g>`),
   zoom: () => demoSvg(`<g transform="translate(110 55)"><g>${'<animateTransform attributeName="transform" type="scale" values="1;1;1.45;1.45;1" keyTimes="0;.2;.5;.8;1" dur="' + DUR + '" repeatCount="indefinite"/>'}${wire('M-80 0H80')}${sp(-30, 0, 'Z')}${sp(30, 0, 'X')}</g></g>`),
+  // hold ⌘: each selected node's neighbours pulse in its own colour
+  nb: () => {
+    const f = (x) => x.toFixed(2);
+    const pulse = (x, y, c, t, r = 13) => `<circle cx="${x}" cy="${y}" r="${r}" fill="none" stroke="${c}" stroke-width="2.2" opacity="0">${anim('opacity', '0;0;1;.3;1;.3;0;0', `0;${f(t)};${f(t + .07)};${f(t + .19)};${f(t + .31)};${f(t + .43)};.86;1`)}</circle>`;
+    const glow = (d, c, t) => `<path d="${d}" fill="none" stroke="${c}" stroke-width="2.6" stroke-linecap="round" opacity="0">${anim('opacity', '0;0;1;1;0;0', `0;${f(t)};${f(t + .05)};.84;.88;1`)}</path>`;
+    const A = [80, 55], B = [150, 55], NA = [[28, 22], [28, 88]], NB = [[200, 25], [200, 85]], ca = '#5b5bd6', cb = '#f59e0b';
+    const ws = NA.map(([x, y]) => [`M${x} ${y}L${A[0]} ${A[1]}`, ca, .22]).concat(NB.map(([x, y]) => [`M${B[0]} ${B[1]}L${x} ${y}`, cb, .32]));
+    return demoSvg(ws.map(([d]) => wire(d)).join('') + ws.map(([d, c, t]) => glow(d, c, t)).join('')
+      + NA.map(([x, y], i) => sp(x, y, i ? 'X' : 'Z') + pulse(x, y, ca, .22)).join('') + NB.map(([x, y], i) => sp(x, y, i ? 'Z' : 'X') + pulse(x, y, cb, .32)).join('')
+      + sp(A[0], A[1], 'Z') + sp(B[0], B[1], 'X')
+      + `<circle cx="${A[0]}" cy="${A[1]}" r="13" fill="none" stroke="${ca}" stroke-width="1.6" opacity=".5">${anim('opacity', '.5;.5;1;1;.5', '0;.2;.24;.86;1')}</circle>`
+      + `<circle cx="${B[0]}" cy="${B[1]}" r="13" fill="none" stroke="${cb}" stroke-width="1.6" opacity=".5">${anim('opacity', '.5;.5;1;1;.5', '0;.3;.34;.86;1')}</circle>`
+      + `<g transform="translate(101 4)"><rect width="18" height="18" rx="4" fill="#fff" stroke="#d8d8d2">${anim('fill', '#fff;#fff;#e6e6fb;#e6e6fb;#fff;#fff', '0;.14;.17;.84;.87;1')}</rect><text x="9" y="13" class="dkey">${IS_MAC ? '⌘' : 'C'}</text></g>`);
+  },
+  // wire tool: right-drag a box around the sources, then click the target
+  rdrag: () => {
+    const S2 = [[40, 30], [40, 80]];
+    const grow = (x, y, i) => { const L = Math.hypot(170 - x, 55 - y); return `<path d="M${x} ${y}L170 55" fill="none" stroke="#1d1d1f" stroke-width="1.5" stroke-dasharray="${L}" stroke-dashoffset="${L}">${anim('stroke-dashoffset', `${L};${L};0;0;${L}`, `0;${(.66 + i * .04).toFixed(2)};${(.8 + i * .04).toFixed(2)};.93;1`)}</path>`; };
+    return demoSvg(S2.map(([x, y], i) => grow(x, y, i)).join('')
+      + `<rect x="22" y="14" width="0" height="0" rx="3" fill="rgba(91,91,214,.08)" stroke="#5b5bd6" stroke-width="1" stroke-dasharray="3 2">${anim('width', '0;0;40;40;0;0', '0;.12;.42;.5;.52;1')}${anim('height', '0;0;84;84;0;0', '0;.12;.42;.5;.52;1')}</rect>`
+      + S2.map(([x, y], i) => sp(x, y, 'Z') + ring(x, y, '0;0;1;1;0;0', `0;${(.3 + i * .08).toFixed(2)};${(.34 + i * .08).toFixed(2)};.93;.96;1`)).join('') + sp(170, 55, 'X')
+      + `<text x="44" y="106" class="dlabel" opacity="0">right-drag${anim('opacity', '0;0;1;1;0;0', '0;.1;.14;.48;.52;1')}</text>`
+      + `<g>${move('24 16;24 16;62 98;62 98;174 59;174 59;24 16', '0;.12;.42;.5;.62;.92;1')}${CUR}</g>`);
+  },
+  // click V again: switches for what box-select picks
+  pick: () => {
+    const row = (y, ic, l, off) => `<g transform="translate(62 ${y})">${ic}<text x="16" y="4" style="font:500 9px system-ui,sans-serif;fill:#1d1d1f">${l}</text>`
+      + `<rect x="74" y="-5" width="18" height="10" rx="5" fill="#1d1d1f">${off ? anim('fill', '#1d1d1f;#1d1d1f;#d6d6d0;#d6d6d0;#1d1d1f', '0;.45;.5;.92;1') : ''}</rect>`
+      + `<circle cx="87" cy="0" r="3.6" fill="#fff">${off ? anim('cx', '87;87;79;79;87', '0;.45;.5;.92;1') : ''}</circle></g>`;
+    return demoSvg(`<g transform="translate(110 96)"><g>${'<animateTransform attributeName="transform" type="scale" values="0;0;1.04;1;1;0;0" keyTimes="0;.18;.26;.3;.9;.95;1" dur="' + DUR + '" repeatCount="indefinite"/>'}<g transform="translate(-110 -96)">`
+      + `<g>${anim('opacity', '0;0;1;1;0;0', '0;.18;.22;.9;.94;1')}<rect x="54" y="6" width="112" height="72" rx="9" fill="#fff" stroke="#e4e4e0"/>`
+      + row(22, '<circle r="4" fill="#d8f8d8" stroke="#1d1d1f"/>', 'Z spiders') + row(42, '<circle r="4" fill="#e8a5a5" stroke="#1d1d1f"/>', 'X spiders', true) + row(62, '<path d="M-5 0H5" stroke="#1d1d1f" stroke-width="1.4"/>', 'Wires') + '</g></g></g></g>'
+      + `<rect x="99" y="87" width="22" height="19" rx="6" fill="#1d1d1f"/><path d="M106 91l8 3.5-3.4 1 2 3.4-1.5.9-2-3.4-2.6 2.2z" fill="#fff"/>`
+      + `<g>${move('140 104;114 98;114 98;150 50;150 50;140 104', '0;.12;.18;.4;.6;1')}${CUR}</g>`);
+  },
+  // a wire's colour and line style (for your own eyes)
+  look: () => {
+    const cols = ['#3a3a3c', '#f07c7c', '#e9c46a', '#7cc68d', '#6cb2f0'];
+    return demoSvg(`<path d="M40 38H180" fill="none" stroke-width="2" stroke-linecap="round" stroke="#1d1d1f">${anim('stroke', '#1d1d1f;#1d1d1f;#6cb2f0;#6cb2f0', '0;.3;.32;1', ' calcMode="discrete"')}${anim('stroke-dasharray', 'none;none;6 4;6 4', '0;.62;.64;1', ' calcMode="discrete"')}</path>`
+      + sp(40, 38, 'Z') + sp(180, 38, 'X')
+      + cols.map((c, i) => `<rect x="${38 + i * 16}" y="76" width="11" height="11" rx="3" fill="${c}"/>`).join('')
+      + `<rect x="100" y="73.5" width="16" height="16" rx="4" fill="none" stroke="#6cb2f0" stroke-width="1.4" opacity="0">${anim('opacity', '0;0;1;1', '0;.3;.32;1', ' calcMode="discrete"')}</rect>`
+      + `<rect x="128" y="72" width="58" height="19" rx="6" fill="#f2f2f0"/><path d="M134 81.5h12" stroke="#1d1d1f" stroke-width="1.6"/><path d="M154 81.5h12" stroke="#1d1d1f" stroke-width="1.6" stroke-dasharray="3.5 2.5"/><path d="M172 81.5h10" stroke="#1d1d1f" stroke-width="2" stroke-dasharray="0 3" stroke-linecap="round"/>`
+      + `<g>${move('70 105;103 84;103 84;160 86;160 86;70 105', '0;.24;.36;.56;.7;1')}${CUR}</g>`);
+  },
+  // text cells: ⋮ ⋯ ⋱ between wires
+  text: () => {
+    const g = ['⋮', '⋯', '⋱'];
+    return demoSvg(wire('M30 22H190') + wire('M30 88H190') + pt(30, 22) + pt(30, 88) + sp(110, 22, 'Z') + sp(110, 88, 'Z')
+      + `<rect x="98" y="43" width="24" height="24" rx="5" fill="#f2f2f0"/>`
+      + g.map((c, i) => `<text x="110" y="61" style="font:20px 'Cambria Math','STIX Two Math',serif;fill:#1d1d1f;text-anchor:middle" opacity="${i ? 0 : 1}">${c}${anim('opacity', [0, 1, 2, 3].map((j) => (j % 3 === i ? 1 : 0)).join(';'), '0;.33;.66;1', ' calcMode="discrete"')}</text>`).join('')
+      + g.map((c, i) => `<g transform="translate(${146 + i * 22} 44)"><rect width="18" height="18" rx="9" fill="#fff" stroke="#e4e4e0">${anim('fill', [0, 1, 2, 3].map((j) => (j % 3 === i ? '#1d1d1f' : '#fff')).join(';'), '0;.33;.66;1', ' calcMode="discrete"')}</rect><text x="9" y="13.5" style="font:12px 'Cambria Math',serif;text-anchor:middle" fill="#1d1d1f">${anim('fill', [0, 1, 2, 3].map((j) => (j % 3 === i ? '#fff' : '#1d1d1f')).join(';'), '0;.33;.66;1', ' calcMode="discrete"')}${c}</text></g>`).join(''));
+  },
+  // O: rotate the diagram 180°, inputs and outputs swap
+  rotate: () => demoSvg(`<g>${'<animateTransform attributeName="transform" type="rotate" values="0 100 55;0 100 55;180 100 55;180 100 55;360 100 55;360 100 55" keyTimes="0;.12;.36;.56;.8;1" calcMode="spline" keySplines="0 0 1 1;.5 0 .2 1;0 0 1 1;.5 0 .2 1;0 0 1 1" dur="' + DUR + '" repeatCount="indefinite"/>'}`
+    + wire('M30 55H170') + wire('M70 55V90') + `<circle cx="30" cy="55" r="4" fill="rgba(91,91,214,.15)" stroke="#5b5bd6" stroke-dasharray="2 1.6"/><circle cx="170" cy="55" r="4" fill="rgba(217,130,43,.15)" stroke="#d9822b" stroke-dasharray="2 1.6"/>`
+    + sp(70, 55, 'Z') + sp(130, 55, 'X') + pt(70, 90) + '</g>'
+    + `<g transform="translate(196 8)"><rect width="18" height="18" rx="4" fill="#fff" stroke="#d8d8d2">${anim('fill', '#fff;#e6e6fb;#fff;#fff;#e6e6fb;#fff;#fff', '0;.1;.2;.54;.58;.68;1')}</rect><text x="9" y="13" class="dkey">O</text></g>`),
 };
 const GUIDE_KEYS = () => [   // read when the guide opens (key bindings load later)
   ['select', [keys.select], 'Select and move', 'Click a node or wire to select it, drag to move. Drag on empty canvas to box-select. Click the selected item again to edit it.'],
@@ -2845,20 +2903,26 @@ const GUIDE_KEYS = () => [   // read when the guide opens (key bindings load lat
   ['curve', [keys.curve], 'Curve style', 'With a wire selected, each press cycles straight → bend left → bend right → s → cap → cup → C. Shift+S goes back. Drag the dot on a bend to change how far it bends.'],
   ['swap', ['W'], 'Swap two nodes', 'Select exactly two nodes and press W: they trade places and each takes over the other’s wires. With anything else selected, W picks the wire tool.'],
   ['colour', [keys.swap], 'Swap colour', 'Turns the selected Z spiders into X spiders and back.'],
+  ['pick', [keys.select, 'click'], 'Choose what box-select picks', 'Click V again (or right-click it): switch off kinds such as wires or text cells, or hover a row and press Only. A dot on V means a filter is on; All brings everything back.'],
+  ['look', ['click'], 'Colour a wire', 'Select one or more wires: the panel has 10 colours and solid, dashed or dotted lines. Only for telling wires apart — it changes nothing in the maths or in LaTeX.'],
+  ['text', [keys.T], 'Text cells', 'T places a text cell (⋮ to start). Its panel offers ⋮ ⋯ ⋱ … ⊗ ⊗n n m k, or type any LaTeX. Text cells are ignored when computing.'],
+  ['rotate', [keys.rotate], 'Rotate 180°', 'O turns the current diagram half way round: inputs become outputs, bends and curve styles are turned with it.'],
 ];
 const GUIDE_MODS = [
   ['ctrl', ['Ctrl', 'drag'], 'Move a node without its wires', 'Lifts the node out; the wire it sat on joins up again. Drop it on another wire to insert it there.'],
   ['copy', [IS_MAC ? '⌘' : 'Alt', 'drag'], 'Copy a node', `Drags out a copy (no wires) and leaves the original. ${IS_MAC ? 'Alt + drag works too.' : ''} Drop on a wire to insert the copy.`],
   ['shift', ['Shift', 'click'], 'Add to the selection', 'Shift-click adds or removes a node or wire. Select exactly two nodes, then W swaps them.'],
   ['drop', ['drag'], 'Drop a node onto a wire', 'Drag a node onto any wire: it is inserted there and its old wire rejoins.'],
+  ['nb', [CMD, 'hold'], 'Show neighbours', `Select one or more nodes and hold ${CMD}: the nodes wired to them pulse, one colour per selected node, so you can see which belongs to which.`],
+  ['rdrag', ['Right', 'drag'], 'Box-select in the wire tool', 'In the wire tool, hold the right button and drag a box: the nodes in it become sources; click a target to wire them all. A plain right-click still opens the panel.'],
   ['zoom', [CMD, 'scroll'], 'Zoom', `${CMD} + scroll or pinch zooms around the cursor; F fits everything on screen; − / = zoom out and in.`],
 ];
 function guideHTML() {
   const card = ([demo, ks, title, desc]) => `<article class="gcard"><div class="gdemo">${DEMOS[demo]()}</div>
-    <div class="gtitle"><span>${title}</span><span class="gkeys">${ks.map((k) => (k === 'drag' || k === 'click' || k === 'scroll' ? `<span class="gplus">${k}</span>` : cap(keyLabel(k) || k))).join('<span class="gplus">+</span>').replace(/<span class="gplus">\+<\/span>(<kbd class="cap">)/g, '<span class="gsep">/</span>$1')}</span></div>
+    <div class="gtitle"><span>${title}</span><span class="gkeys">${ks.map((k) => (k === 'drag' || k === 'click' || k === 'scroll' || k === 'hold' ? `<span class="gplus">${k}</span>` : cap(keyLabel(k) || k))).join('<span class="gplus">+</span>').replace(/<span class="gplus">\+<\/span>(<kbd class="cap">)/g, '<span class="gsep">/</span>$1')}</span></div>
     <p>${desc}</p></article>`;
   const modCard = ([demo, ks, title, desc]) => `<article class="gcard"><div class="gdemo">${DEMOS[demo]()}</div>
-    <div class="gtitle"><span>${title}</span><span class="gkeys">${ks.map((k) => (['drag', 'click', 'scroll'].includes(k) ? `<span class="gplus">${k}</span>` : cap(k))).join('<span class="gplus">+</span>')}</span></div><p>${desc}</p></article>`;
+    <div class="gtitle"><span>${title}</span><span class="gkeys">${ks.map((k) => (['drag', 'click', 'scroll', 'hold'].includes(k) ? `<span class="gplus">${k}</span>` : cap(k))).join('<span class="gplus">+</span>')}</span></div><p>${desc}</p></article>`;
   const minimal = String.raw`\documentclass{article}
 \usepackage{zxdiagram}   % zxdiagram.sty next to this .tex file
 
