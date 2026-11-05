@@ -1060,3 +1060,4 @@ select.sel { height: 30px; border-radius: 8px; border: 1px solid var(--line); ba
 .pk-only.pop { animation: pkonly .32s cubic-bezier(.3,1.6,.5,1); }
 @keyframes pkonly { 40% { transform: scale(.85); background: rgba(91,91,214,.2); color: var(--accent); } }
 @media (hover: none) { .pk-only { opacity: 1; transform: none; pointer-events: auto; } }
+#insp button:focus:not(:focus-visible) { outline: none; }

@@ -1551,7 +1551,20 @@ insp.addEventListener('input', (ev) => {
   save(); render();
 });
 insp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && (ev.target.tagName !== 'TEXTAREA' || ev.metaKey || ev.ctrlKey)) ev.target.blur(); ev.stopPropagation(); if (ev.key === 'Escape') ev.target.blur(); });
-insp.addEventListener('focusout', () => setTimeout(() => { inspSig = ''; updateInspector(); }, 0));
+// After typing, rebuild the panel (it skips rebuilds while a field has focus). Only for fields, and only once
+// focus has left them: rebuilding when focus just moves between buttons replaced the button mid-click.
+insp.addEventListener('focusout', (ev) => {
+  if (!/INPUT|TEXTAREA/.test(ev.target.tagName)) return;
+  const to = ev.relatedTarget;
+  if (to && insp.contains(to) && /INPUT|TEXTAREA/.test(to.tagName)) return;
+  setTimeout(() => { if (inspPress) inspLater = true; else { inspSig = ''; updateInspector(); } }, 0);
+});
+let inspPress = false, inspLater = false;   // a press in the panel: rebuild only after its click has landed
+insp.addEventListener('pointerdown', () => { inspPress = true; }, true);
+window.addEventListener('pointerup', () => setTimeout(() => {
+  inspPress = false;
+  if (inspLater) { inspLater = false; inspSig = ''; updateInspector(); }
+}, 0));
 insp.addEventListener('click', (ev) => {
   const b = ev.target.closest('[data-i]');
   if (!b || b.tagName === 'INPUT') return;
