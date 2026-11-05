@@ -3203,7 +3203,7 @@ function simLane(lane) {
   if (SIM.off) return null;
   if (SIM[lane]) return SIM[lane];
   let w;
-  try { w = new Worker('zx-worker.js?v=5'); } catch (_) { SIM.off = true; return null; }
+  try { w = new Worker('zx-worker.js?v=6'); } catch (_) { SIM.off = true; return null; }
   w.onmessage = (e) => {
     const m = e.data, p = m && SIM.pend.get(m.id);
     if (!p) return;

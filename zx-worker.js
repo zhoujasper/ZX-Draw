@@ -1,6 +1,6 @@
 // zx-worker.js — runs zx-sim jobs off the main thread so the page never freezes.
 // Message in: { id, fn, args }. Out: { id, ok: true, r } or { id, ok: false, msg, nodes }.
-importScripts('zx-core.js?v=28', 'zx-sim.js?v=31');
+importScripts('zx-core.js?v=29', 'zx-sim.js?v=31');
 const JOBS = new Set(['matrixView', 'relationCheck', 'symbolsOf', 'simplify', 'evaluate', 'compare']);
 self.onmessage = (e) => {
   const { id, fn, args } = e.data;
