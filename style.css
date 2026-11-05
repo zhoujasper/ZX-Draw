@@ -1053,3 +1053,11 @@ select.sel { height: 30px; border-radius: 8px; border: 1px solid var(--line); ba
 .lsi.ls-dash { stroke-dasharray: 5 3.5; }
 .lsi.ls-dot { stroke-dasharray: 0 4; stroke-width: 2.4; }
 @media (max-width: 640px) { .wc { width: 24px; height: 24px; } }
+.pk-only { border: 0; background: var(--soft); color: var(--muted); font: inherit; font-size: 11px; font-weight: 600; padding: 3px 7px; border-radius: 6px; cursor: pointer;
+  opacity: 0; transform: translateX(6px) scale(.9); pointer-events: none; transition: opacity .16s, transform .22s cubic-bezier(.22,1.3,.36,1), background .12s, color .12s; }
+.pk-row:hover .pk-only, .pk-only:focus-visible { opacity: 1; transform: none; pointer-events: auto; }
+.pk-only:hover { background: rgba(91,91,214,.12); color: var(--accent); }
+.pk-only:active { transform: scale(.9); }
+.pk-only.pop { animation: pkonly .32s cubic-bezier(.3,1.6,.5,1); }
+@keyframes pkonly { 40% { transform: scale(.85); background: rgba(91,91,214,.2); color: var(--accent); } }
+@media (hover: none) { .pk-only { opacity: 1; transform: none; pointer-events: auto; } }

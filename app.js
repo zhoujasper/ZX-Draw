@@ -1919,6 +1919,21 @@ vp.addEventListener('pointermove', (e) => {
       d.nodes.forEach((n) => { const q = pos(d, n); if (q.x >= wx0 && q.x <= wx1 && q.y >= wy0 && q.y <= wy1) { inside.add(n.id); if (selPick[pickKind(n.t)] !== false) s.add(n.id); } });
       if (selPick.wire !== false) d.edges.forEach((ed) => { if (inside.has(ed.a) && inside.has(ed.b)) s.add(ed.id); });
     });
+    // a wire is picked as soon as any part of it lies in the box (points sampled once per drag from the drawn paths)
+    if (selPick.wire !== false) {
+      if (!drag.wpts) {
+        drag.wpts = [];
+        world.querySelectorAll('.edges .edge[data-edge] > .wire-p').forEach((el) => {
+          const L = el.getTotalLength(), k = Math.max(2, Math.ceil(L / 5)), pts = [];
+          for (let i = 0; i <= k; i++) { const q = el.getPointAtLength(L * i / k); pts.push(q.x, q.y); }
+          drag.wpts.push([el.parentNode.dataset.edge, pts]);
+        });
+      }
+      drag.wpts.forEach(([id, pts]) => {
+        if (s.has(id)) return;
+        for (let i = 0; i < pts.length; i += 2) if (pts[i] >= wx0 && pts[i] <= wx1 && pts[i + 1] >= wy0 && pts[i + 1] <= wy1) { s.add(id); break; }
+      });
+    }
     sel = s;
     inspOpen = false;
     render();
@@ -4490,7 +4505,7 @@ function openPickPop(b) {
   el.className = 'pickpop';
   const draw = () => {
     el.innerHTML = `<div class="pk-head"><span>Box select picks</span><button class="pk-all"${pickAll() ? ' disabled' : ''}>All</button></div>`
-      + PICKS.map(([k, l, ic]) => `<label class="pk-row"><span class="pk-ic">${ic}</span><span class="pk-l">${l}</span><input type="checkbox" data-k="${k}"${selPick[k] !== false ? ' checked' : ''}></label>`).join('');
+      + PICKS.map(([k, l, ic]) => `<label class="pk-row"><span class="pk-ic">${ic}</span><span class="pk-l">${l}</span><button class="pk-only" data-only="${k}" title="Only ${l.toLowerCase()}">Only</button><input type="checkbox" data-k="${k}"${selPick[k] !== false ? ' checked' : ''}></label>`).join('');
   };
   draw();
   el.addEventListener('change', (e) => {
@@ -4500,10 +4515,25 @@ function openPickPop(b) {
     try { localStorage.setItem(PICK_KEY, JSON.stringify(selPick)); } catch (_) {}
     el.querySelector('.pk-all').disabled = pickAll(); syncPickDot();
   });
+  // set the switches one after another so the change runs down the list
+  const flip = (want) => {
+    try { Object.keys(selPick).length ? localStorage.setItem(PICK_KEY, JSON.stringify(selPick)) : localStorage.removeItem(PICK_KEY); } catch (_) {}
+    let t = 0;
+    el.querySelectorAll('input[data-k]').forEach((i) => { const on = want(i.dataset.k); if (i.checked !== on) { setTimeout(() => { i.checked = on; }, t); t += 35; } });
+    el.querySelector('.pk-all').disabled = pickAll(); syncPickDot();
+  };
   el.addEventListener('click', (e) => {
+    const only = e.target.closest('.pk-only');
+    if (only) {
+      e.preventDefault(); e.stopPropagation();
+      const k = only.dataset.only;
+      selPick = {}; PICKS.forEach(([q]) => { if (q !== k) selPick[q] = false; });
+      only.classList.remove('pop'); void only.offsetWidth; only.classList.add('pop');
+      return flip((q) => q === k);
+    }
     if (!e.target.closest('.pk-all')) return;
-    selPick = {}; try { localStorage.removeItem(PICK_KEY); } catch (_) {}
-    el.querySelectorAll('input[data-k]').forEach((i) => { i.checked = true; }); e.target.disabled = true; syncPickDot();
+    selPick = {};
+    flip(() => true);
   });
   el.addEventListener('contextmenu', (e) => e.preventDefault());
   document.body.appendChild(el);
