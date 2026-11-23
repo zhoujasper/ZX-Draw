@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
   <title>ZX Draw</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
-  <link rel="stylesheet" href="style.css?v=74">
+  <link rel="stylesheet" href="style.css?v=90">
 </head>
 <body>
   <main id="viewport">
@@ -23,7 +23,7 @@
       <span class="name">ZX Draw</span>
     </div>
     <div id="tabs" class="tabs"></div>
-    <button class="swt hide-m" id="btnGrid" role="switch" aria-checked="true" title="Grid on: whole cells, dots shown. Off: nodes can also sit half way between cells (exported with zxHalf)"><span class="swt-lbl">Grid</span><span class="swt-track"><span class="swt-knob"></span></span></button>
+    <button class="swt gsw hide-m" id="btnGrid" role="switch" aria-checked="true" aria-label="Grid / Half grid" title="Grid: nodes on whole cells. Half grid: also half way between cells (exported with zxHalf)"><span class="gsw-track"><span class="gsw-t g1">Grid</span><span class="gsw-t g2">Half grid</span><span class="gsw-knob"></span></span></button>
     <button class="swt" id="btnSingle" role="switch" aria-checked="false"><span class="swt-lbl">Single graph</span><span class="swt-track"><span class="swt-knob"></span></span></button>
     <div class="top-actions">
       <button class="ibtn hide-m" id="btnTidy" title="Tidy layout (L)"></button>
@@ -52,6 +52,7 @@
     <button class="tool" data-tool="P" title="Dot: routing point for wires (D)"><span class="ti"></span><kbd>D</kbd></button>
     <button class="tool" data-tool="T" title="Text cell: ⋮, labels (T)"><span class="ti"></span><kbd>T</kbd></button>
     <button class="tool" data-tool="M" title="Matrix arrow: a 0/1 matrix as one Z/X block (A)"><span class="ti"></span><kbd>A</kbd></button>
+    <button class="tool" data-tool="B" title="Box: a labelled gate, resizable (B)"><span class="ti"></span><kbd>B</kbd></button>
     <button class="tool" data-tool="edge" title="Wire: drag between nodes or cells (E)"><span class="ti"></span><kbd>E</kbd></button>
     <span class="dock-sep"></span>
     <button class="tool" id="dUndo" title="Undo (⌘Z)"></button>
@@ -93,9 +94,9 @@
   <div id="toast"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-  <script src="zx-core.js?v=29"></script>
-  <script src="zx-sim.js?v=31"></script>
+  <script src="zx-core.js?v=42"></script>
+  <script src="zx-sim.js?v=38"></script>
   <script src="zx-pyzx.js?v=2"></script>
-  <script src="app.js?v=89"></script>
+  <script src="app.js?v=125"></script>
 </body>
 </html>

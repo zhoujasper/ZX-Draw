@@ -80,10 +80,34 @@
       n.mat = pm && !pm.err ? pm.rows : null; n.st = '';
       if (n.mat && n.lin === String(n.mat[0].length)) n.lin = '';      // the size: shown automatically
       if (n.mat && n.lout === String(n.mat.length)) n.lout = '';
+    } else if (base === 'Block' || base === 'Box' || base === 'Gate') {
+      // box: \zxBlock[opts]{W}{H}{label} (W, H = drawn size in cells), or zx-calculus \zxBox{..} / \zxGate{..}
+      n.t = 'B'; n.bw = 1; n.bh = 1; n.lay = ''; n.fill = ''; n.v = '';
+      // box labels are text, math inside $…$ (n.lt marks that); \zxBox / \zxGate (zx-calculus) are math mode,
+      // and an old \zxBlock label written as bare math (has \ ^ _ but no $) gets its $…$ back
+      const raw = ((base === 'Block' ? args[2] : args[0]) || '').trim();
+      n.label = raw && !raw.includes('$') && (base !== 'Block' || /[\\^_]/.test(raw)) ? `$${raw}$` : raw; n.lt = 1;
+      if (base === 'Block') { n._W = parseFloat(args[0]) || 0; n._H = parseFloat(args[1]) || 0; } else n.cmd = base;
+      const keep = [];
+      splitOpts(st).forEach((t) => {
+        const m = FILL_RE.exec(t);
+        if (m) n.fill = '#' + m.slice(1, 4).map((x) => (+x).toString(16).padStart(2, '0')).join('');
+        else if (AT_RE.test(t)) { const q = AT_RE.exec(t); n._at = { x: +q[1], y: -q[2] }; }
+        else if (t === 'zxEnds') n.lay = 'ends';
+        else if (t === 'zxVert') n.vt = 1;
+        else if (t === 'zxMid') n.lay = 'mid';
+        else keep.push(t);
+      });
+      n.st = keep.join(', ');
     } else if (base === 'Not') {
       n.t = 'X'; n.cmd = 'Not'; n.v = v; n.label = args[0] || '';
     } else {
       n.t = 'N'; n.cmd = base; n.v = v;
+      // export looks: zxDot = a visible Dot, zxIn / zxOut = marked open ends (recomputed, so dropped)
+      const toks = splitOpts(n.st);
+      if (base === 'N' && toks.includes('zxDot')) { n.t = 'P'; n.cmd = ''; }
+      if (toks.includes('zxFill')) n._fill = true;   // keeps a cell under a box wide (dropped again if unwired)
+      n.st = toks.filter((t) => t !== 'zxDot' && t !== 'zxIn' && t !== 'zxOut' && t !== 'zxFill').join(', ');
     }
     return n;
   }
@@ -107,8 +131,10 @@
         let st = '';
         ws();
         if (s[i] === '[') { const g = readGroup(s, i, '[', ']'); st = g[0]; i = g[1]; }
+        ws();
+        if (base === 'Block' && s[i] === '<') i = readGroup(s, i, '<', '>')[1];   // the legs: redrawn from the box
         const args = [];
-        const nargs = base.startsWith('Frac') ? 2 : base === 'Mat' ? 3 : 1;
+        const nargs = base.startsWith('Frac') ? 2 : base === 'Mat' || base === 'Block' ? 3 : 1;
         for (let a = 0; a < nargs; a++) {
           ws();
           if (s[i] === '{') { const g = readGroup(s, i, '{', '}'); args.push(g[0].trim()); i = g[1]; }
@@ -141,7 +167,7 @@
         if (!node) {
           // plain cell content such as \vdots or \cdots becomes a text node
           const txt = cell.replace(/\\(?:ar|arrow|[udlr]+ar)(?![A-Za-z])(?:\s*\[[^\]]*\])?(?:\s*\{[^}]*\})?/g, '').trim();
-          if (txt) node = Object.assign(blankNode(), { t: 'T', label: txt });
+          if (txt) node = Object.assign(blankNode(), { t: 'T', label: txt.replace(/^\|\[\s*(?:zxT[LRUD]|anchor\s*=\s*(?:east|west))\s*\]\|\s*/, '') });   // the lean is worked out again on export
         }
         if (!node && !arrows.length) return;
         const n = node || Object.assign(blankNode(), { cmd: 'N' });
@@ -156,12 +182,32 @@
       const r = a.from.r + dr, c = a.from.c + dc, key = r + ',' + c;
       let t = grid.get(key);
       if (!t) { t = Object.assign(blankNode(), { r, c, cmd: 'N' }); d.nodes.push(t); grid.set(key, t); }
-      d.edges.push({ id: newId('e'), a: a.from.id, b: t.id, o: a.opts });
+      d.edges.push(edgeFromTex({ id: newId('e'), a: a.from.id, b: t.id }, a.opts));
     });
+    d.nodes = d.nodes.filter((n) => { const f = n._fill; delete n._fill; return !f || d.edges.some((e) => e.a === n.id || e.b === n.id); });
     return unbundle(fromHalf(d));
   }
 
+  // \zxScalar{…} (written by docTex around the scalars next to a relation) → its content
+  function unScalar(s) {
+    let i;
+    while ((i = s.indexOf('\\zxScalar')) >= 0) {
+      let j = i + 9; while (s[j] === ' ') j++;
+      if (s[j] !== '{') break;
+      let depth = 0, k = j;
+      for (; k < s.length; k++) { if (s[k] === '{') depth++; else if (s[k] === '}' && --depth === 0) break; }
+      s = s.slice(0, i) + s.slice(j + 1, k) + s.slice(k + 1);
+    }
+    return s;
+  }
+  // the relation with its scalars (pre / post) passed through wrap: smaller than the relation itself
+  function sepScalarTex(sep, wrap) {
+    const p = sepSplit(sep);
+    if (!p.pre && !p.post) return sep;
+    return [p.pre && wrap(p.pre), sepJoin({ pre: '', rule: p.rule, rel: p.rel, post: '' }), p.post && wrap(p.post)].filter(Boolean).join(' ');
+  }
   function cleanSep(s) {
+    s = unScalar(s);
     const t = s.replace(/\\nonumber|\\notag/g, '').replace(/&/g, '').replace(/\\\\/g, '').replace(/\s+/g, ' ').trim();
     return t;   // may be empty: diagrams side by side with no relation
   }
@@ -240,13 +286,39 @@
 
   // in / out labels: what the user typed, else the size of A
   const matLabels = (n) => ({ lin: n.lin || (n.mat && n.mat[0] ? String(n.mat[0].length) : ''), lout: n.lout || (n.mat ? String(n.mat.length) : '') });
-  function nodeTex(n, mat, hide) {
-    const st = n.st ? `[${n.st}]` : '';
+  // Wire options in LaTeX ↔ the editor: the Hadamard edge is the token H inside, zxHE in LaTeX (blue dashed,
+  // zxdiagram.sty; a plain H from other sources reads the same). A wire colour is written as draw={rgb,255:…}.
+  const HEX2 = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  const FILL_RE = /^fill\s*=\s*\{?\s*rgb\s*,\s*255\s*:\s*red\s*,\s*(\d+)\s*;\s*green\s*,\s*(\d+)\s*;\s*blue\s*,\s*(\d+)\s*\}?$/;
+  const AT_RE = /^zxAt\s*=\s*\{\s*(-?[\d.]+)\s*\}\s*\{\s*(-?[\d.]+)\s*\}$/;
+  const PORT_RE = /^zx(From|To)\s*=\s*\{\s*(-?[\d.]+)\s*\}\s*\{\s*(-?[\d.]+)\s*\}$/;
+  const COL_RE = /^draw\s*=\s*\{?\s*rgb\s*,\s*255\s*:\s*red\s*,\s*(\d+)\s*;\s*green\s*,\s*(\d+)\s*;\s*blue\s*,\s*(\d+)\s*\}?$/;
+  function edgeFromTex(e, opts) {
+    const out = [];
+    splitOpts(opts || '').forEach((t) => {
+      const m = COL_RE.exec(t);
+      const pm = PORT_RE.exec(t);
+      if (m) e.col = '#' + m.slice(1, 4).map((x) => (+x).toString(16).padStart(2, '0')).join('');
+      else if (pm) e[pm[1] === 'From' ? '_pa' : '_pb'] = { x: +pm[2], y: -pm[3] };   // where the wire meets a box (made a pin in fromHalf)
+      else out.push(t === 'zxHE' ? 'H' : t);
+    });
+    e.o = out.join(', ');
+    return e;
+  }
+  function edgeTexOpts(e, o, look) {
+    const toks = splitOpts(o || '').map((t) => (t === 'H' ? 'zxHE' : t));
+    if (look && look.col && e.col && /^#[0-9a-f]{6}$/i.test(e.col) && !toks.includes('zxHE')) { const [r, g, b] = HEX2(e.col); toks.push(`draw={rgb,255:red,${r};green,${g};blue,${b}}`); }
+    return toks.join(', ');
+  }
+  function nodeTex(n, mat, hide, look) {
+    let st = n.st ? `[${n.st}]` : '';
+    if (look && n.t === 'N' && look.io && look.io.has(n.id)) st = `[${[look.io.get(n.id) === 'in' ? 'zxIn' : 'zxOut'].concat(n.st ? [n.st] : []).join(', ')}]`;
     const v = n.v || '';
     if (n.t === 'T') return n.label || '';
-    if (n.t === 'P') return '\\zxN{}';   // Dot: a routing point, invisible in LaTeX
+    if (n.t === 'P') return look && look.dots ? '\\zxN[zxDot]{}' : '\\zxN{}';   // Dot: a routing point (drawn only when asked)
     if (n.t === 'N') return `\\zx${n.cmd || 'N'}${v}${st}{}`;
     if (n.t === 'M') { const L = matLabels(n), m = mat || n.mat; if (hide && hide.in && !n.lin) L.lin = ''; if (hide && hide.out && !n.lout) L.lout = ''; return `\\zxMat${n.v === '<' ? '<' : ''}${m ? `[${matText(m)}]` : ''}{${L.lin}}{${n.label || ''}}{${L.lout}}`; }
+    if (n.t === 'B') return boxTex(n, look && look.box && look.box.get(n.id));
     if (n.t === 'H') return `\\zxH${v}${st}{}`;
     if (n.cmd === 'Ctrl' || n.cmd === 'Not') return `\\zx${n.cmd}${v}${st}{${n.label || ''}}`;
     const L = (n.label || '').trim();
@@ -297,6 +369,69 @@
     return out;
   }
 
+  // A straight wire must never run under a node it is not wired to (it would read as wired through it).
+  // Such a wire gets the smallest bend that clears every other node, on the freer side; the same bend is
+  // used on the canvas, in LaTeX and in image / TikZ export. base: Map edge id → options to use instead of e.o.
+  // Returns Map edge id → options with the bend added (only for the wires that need one).
+  // Measured as drawn (canvas px: a cell is 64 x 52; tikz-cd rows / columns keep about the same proportions):
+  // a wire counts as running under a node only when it really touches it, its drawn radius plus AV_GAP;
+  // a bend must then keep AV_CLEAR px from its edge.
+  const AV_W = 64, AV_H = 52, AV_GAP = 2, AV_CLEAR = 5;
+  const avRad = (n) => {
+    if (n.t === 'Z' || n.t === 'X') return (n.label || '').trim() ? 14.5 + Math.max(0, (n.label || '').trim().length - 4) * 2 : (n.cmd === 'Ctrl' || n.cmd === 'Not') ? 5.5 : 8.5;
+    if (n.t === 'H') return 8;
+    if (n.t === 'T') return 9;
+    if (n.t === 'M') return 15;
+    return 5;   // wire point / dot: a wire through it would look connected
+  };
+  // wires that may be fanned out by spreadOpts: not bundled, not touching a box (boxes give each wire its own port)
+  function plainEdges(d, bun) {
+    const bx = new Set(d.nodes.filter((n) => n.t === 'B').map((n) => n.id));
+    return d.edges.filter((e) => !(bun && bun.has(e.id)) && !bx.has(e.a) && !bx.has(e.b));
+  }
+  function avoidOpts(d, base) {
+    const out = new Map();
+    if (d.nodes.length < 3) return out;
+    const by = new Map(d.nodes.map((n) => [n.id, n]));
+    d.edges.forEach((e) => {
+      if (e.a === e.b) return;
+      const o = base && base.has(e.id) ? base.get(e.id) : e.o || '';
+      const toks = splitOpts(o);
+      if (toks.some((t) => BEND_RE.test(t) || OTHER_CURVE.test(t) || t === 'zxBundle')) return;
+      const A = by.get(e.a), B = by.get(e.b);
+      if (!A || !B || A.t === 'M' || B.t === 'M' || A.t === 'B' || B.t === 'B') return;
+      const x0 = A.c * AV_W, y0 = A.r * AV_H, x1 = B.c * AV_W, y1 = B.r * AV_H, dx = x1 - x0, dy = y1 - y0, L = Math.hypot(dx, dy);
+      if (!L) return;
+      const others = d.nodes.filter((n) => n !== A && n !== B && n.t !== 'B').map((n) => ({ x: n.c * AV_W, y: n.r * AV_H, rad: avRad(n) }));
+      const segDist = (n) => { const t = Math.max(0, Math.min(1, ((n.x - x0) * dx + (n.y - y0) * dy) / (L * L))); return Math.hypot(x0 + t * dx - n.x, y0 + t * dy - n.y); };
+      if (!others.some((n) => segDist(n) < n.rad + AV_GAP)) return;
+      // TikZ bend (as in the editor, y down): control points at 0.3915·L, turned by ∓θ from the chord
+      const ux = dx / L, uy = dy / L, k = 0.3915 * L;
+      const rot = (x, y, a) => [x * Math.cos(a) - y * Math.sin(a), x * Math.sin(a) + y * Math.cos(a)];
+      const clearOf = (deg, left) => {
+        const th = (deg * Math.PI / 180) * (left ? -1 : 1);
+        const [ax, ay] = rot(ux, uy, th), [bx, by2] = rot(-ux, -uy, -th);
+        const c1x = x0 + k * ax, c1y = y0 + k * ay, c2x = x1 + k * bx, c2y = y1 + k * by2;
+        let m = Infinity;
+        for (let i = 1; i < 24; i++) {
+          const t = i / 24, u = 1 - t;
+          const px = u * u * u * x0 + 3 * u * u * t * c1x + 3 * u * t * t * c2x + t * t * t * x1;
+          const py = u * u * u * y0 + 3 * u * u * t * c1y + 3 * u * t * t * c2y + t * t * t * y1;
+          others.forEach((n) => { m = Math.min(m, Math.hypot(px - n.x, py - n.y) - n.rad); });   // gap to the node's edge
+        }
+        return m;
+      };
+      let pick = null;
+      for (const deg of [20, 25, 30, 35, 40, 45, 50, 60, 70]) {
+        const l = clearOf(deg, true), r = clearOf(deg, false);
+        if (Math.max(l, r) >= AV_CLEAR) { pick = [deg, l > r + 1e-6 ? 'left' : 'right']; break; }
+      }
+      if (!pick) pick = [40, clearOf(40, true) > clearOf(40, false) ? 'left' : 'right'];
+      out.set(e.id, [`bend ${pick[1]}=${pick[0]}`].concat(toks).join(', '));
+    });
+    return out;
+  }
+
   // ---------- half cells ----------
   // A node may sit between two grid cells (r or c ending in .5). LaTeX has only whole cells, so such a
   // diagram is written on a grid twice as fine with the zxHalf option (zxdiagram.sty: half the spacing,
@@ -308,15 +443,139 @@
     return Object.assign({}, d, { opts: ['zxHalf'].concat(o).join(', '), nodes: d.nodes.map((n) => Object.assign({}, n, { r: Math.round(n.r * 2), c: Math.round(n.c * 2) })) });
   }
   function fromHalf(d) {
-    const o = splitOpts(d.opts || '');
+    let o = splitOpts(d.opts || '');
+    const k = o.includes('zxHalf') ? 2 : 1, by = new Map(d.nodes.map((n) => [n.id, n]));
+    d.nodes.forEach((n) => {
+      if (n.t !== 'B') return;
+      const half = (v) => Math.max(0, Math.round(v * 2) / 2), at = n._at || { x: 0, y: 0 };
+      const sx = n._W ? Math.max(0, n._W / k - BOX_PAD) : 0, sy = n._H ? Math.max(0, n._H / k - BOX_PAD) : 0;
+      n.bl = half(sx / 2 - at.x / k); n.br = half(sx / 2 + at.x / k); n.bt = half(sy / 2 - at.y / k); n.bb = half(sy / 2 + at.y / k);
+      delete n._W; delete n._H; delete n._at; delete n.bw; delete n.bh;
+    });
+    d.edges.forEach((e) => ['a', 'b'].forEach((end) => {
+      const q = e['_p' + end]; delete e['_p' + end];
+      const n = by.get(e[end]);
+      if (!q || !isBox(n)) return;
+      const X = boxExt(n), cx = (X.r - X.l) / 2, cy = (X.b - X.t) / 2, x = q.x / k, y = q.y / k;
+      const hor = Math.abs(x - cx) * (X.t + X.b + BOX_PAD) >= Math.abs(y - cy) * (X.l + X.r + BOX_PAD);
+      e['p' + end] = hor ? { s: x < cx ? 'L' : 'R', t: y } : { s: y < cy ? 'T' : 'B', t: x };
+    }));
+    if (o.includes('zxBW') || o.includes('zxGrid')) { o = o.filter((t) => t !== 'zxBW' && t !== 'zxGrid'); d.opts = o.join(', '); }   // export look / box grid: written again on export
     if (!o.includes('zxHalf')) return d;
     d.opts = o.filter((t) => t !== 'zxHalf').join(', ');
     d.nodes.forEach((n) => { n.r /= 2; n.c /= 2; });
     return d;
   }
 
-  function diagramTex(d, ind) {
+
+  // ---------- boxes ----------
+  // A box (t 'B') sits on its cell; bw × bh = the cells it spans (drawn size = span − 1 + BOX_PAD, grown when
+  // a side has more wires than fit). Each wire meets it at a port on the side facing the other end, or on the
+  // side a pin says (e.pa / e.pb = { s: 'L'|'R'|'T'|'B', t: offset along the side in cells }). Ports on a side
+  // are ordered by where their wires come from and spread by n.lay: '' evenly, 'ends' packed to both ends
+  // (room for ⋮ in the middle), 'mid' all into the middle of the side. Offsets in cells from the centre, y down.
+  const BOX_PAD = 0.7, BOX_STEP = 0.5;
+  // a box label is text with math inside $…$ (\$ = a dollar sign); as one math string for KaTeX / MathJax
+  function labelMath(s) {
+    const out = [];
+    String(s || '').split(/(?<!\\)\$/).forEach((t, i) => { if (t) out.push(i % 2 ? `{${t}}` : `\\text{${t}}`); });
+    return out.join('');
+  }
+  const isBox = (n) => n && n.t === 'B';
+  // how far the box reaches past its own cell on each side (cells); old boxes kept a symmetric bw × bh
+  function boxExt(n) {
+    const sx = ((n.bw || 1) - 1) / 2, sy = ((n.bh || 1) - 1) / 2;
+    return { l: n.bl != null ? n.bl : sx, r: n.br != null ? n.br : sx, t: n.bt != null ? n.bt : sy, b: n.bb != null ? n.bb : sy };
+  }
+  function boxGeom(d, n) {
+    const byId = new Map(d.nodes.map((x) => [x.id, x]));
+    const X = boxExt(n), cx = (X.r - X.l) / 2, cy = (X.b - X.t) / 2, ex = (X.l + X.r) / 2 + 0.5, ey = (X.t + X.b) / 2 + 0.5;
+    const sides = { L: [], R: [], T: [], B: [] };
+    d.edges.forEach((e, i) => {
+      if (e.a === e.b) return;
+      ['a', 'b'].forEach((end) => {
+        if (e[end] !== n.id) return;
+        const o = byId.get(end === 'a' ? e.b : e.a);
+        if (!o) return;
+        const pin = e[end === 'a' ? 'pa' : 'pb'];
+        let s, key;
+        if (pin && sides[pin.s]) { s = pin.s; key = +pin.t || 0; } else {
+          const dx = (o.c - n.c - cx) / ex, dy = (o.r - n.r - cy) / ey;
+          s = Math.abs(dx) >= Math.abs(dy) - 1e-9 ? (dx < 0 ? 'L' : 'R') : (dy < 0 ? 'T' : 'B');
+          key = s === 'L' || s === 'R' ? o.r - n.r : o.c - n.c;
+        }
+        sides[s].push({ e: e.id, end, key, i });
+      });
+    });
+    const offs = (k, span) => {
+      if (k <= 1 || n.lay === 'mid') return Array(k).fill(0);
+      if (n.lay === 'ends') {
+        const sp = Math.max(span, (k - 1) * BOX_STEP), a = Math.ceil(k / 2);
+        return Array.from({ length: k }, (_, i) => (i < a ? -sp / 2 + i * BOX_STEP : sp / 2 - (k - 1 - i) * BOX_STEP));
+      }
+      const g = Math.max(span / (k - 1), BOX_STEP);
+      return Array.from({ length: k }, (_, i) => -(k - 1) * g / 2 + i * g);
+    };
+    const need = {};
+    Object.keys(sides).forEach((s) => {
+      const L = sides[s];
+      L.sort((a, b) => a.key - b.key || a.i - b.i || (a.end < b.end ? -1 : 1));
+      const o = offs(L.length, s === 'L' || s === 'R' ? X.t + X.b : X.l + X.r);
+      L.forEach((x, j) => { x.t = o[j]; });
+      need[s] = o.length ? Math.max(...o.map(Math.abs)) * 2 : 0;
+    });
+    const W = Math.max(X.l + X.r, need.T, need.B) + BOX_PAD, H = Math.max(X.t + X.b, need.L, need.R) + BOX_PAD;
+    const ports = new Map(), mid = n.lay === 'mid';   // offsets from the box's own cell (its centre is at cx, cy); mid: wires meet at one point, no legs
+    Object.keys(sides).forEach((s) => sides[s].forEach((x) => {
+      ports.set(x.e + ':' + x.end, Object.assign(s === 'L' ? { s, x: cx - W / 2, y: cy + x.t } : s === 'R' ? { s, x: cx + W / 2, y: cy + x.t } : s === 'T' ? { s, x: cx + x.t, y: cy - H / 2 } : { s, x: cx + x.t, y: cy + H / 2 }, mid ? { mid } : {}));
+    }));
+    return { W, H, cx, cy, ports, sides };
+  }
+  // A wire leaves a box with a short straight leg square to the side (drawn by the box), then follows its own curve.
+  const BOX_STUB = 0.22;
+  const stubOf = (q) => (!q || q.mid ? { x: 0, y: 0 } : q.s === 'L' ? { x: -BOX_STUB, y: 0 } : q.s === 'R' ? { x: BOX_STUB, y: 0 } : q.s === 'T' ? { x: 0, y: -BOX_STUB } : { x: 0, y: BOX_STUB });
+  // where wire e meets box n (offset in cells from its centre), or null
+  const boxPort = (g, e, n) => (g ? g.ports.get(e.id + ':' + (e.a === n.id ? 'a' : 'b')) : null);
+  const r2 = (x) => String(Math.round(x * 100) / 100);
+  const HEXRGB = (h) => { const [r, g, b] = [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16)); return `{rgb,255:red,${r};green,${g};blue,${b}}`; };
+  // \zxBlock[opts]{W}{H}{label}; k = 2 on a zxHalf grid (sizes in LaTeX cells)
+  function boxTex(n, g, k) {
+    k = k || 1;
+    g = g || boxGeom({ nodes: [n], edges: [] }, n);
+    const W = g.W, H = g.H;
+    const o = (g.cx || g.cy ? [`zxAt={${r2(g.cx * k)}}{${r2(-g.cy * k)}}`] : []).concat(n.lay === 'ends' ? ['zxEnds'] : n.lay === 'mid' ? ['zxMid'] : [], n.vt ? ['zxVert'] : []).concat(n.fill && /^#[0-9a-f]{6}$/i.test(n.fill) ? [`fill=${HEXRGB(n.fill)}`] : [], n.st ? [n.st] : []);
+    const mOnly = /^\$([^$]*)\$$/.exec((n.label || '').trim());   // \zxBox / \zxGate take math only
+    if (n.cmd && (n.cmd === 'Gate' || n.cmd === 'Box') && mOnly && !o.length && Math.abs(W - BOX_PAD) < 1e-9 && Math.abs(H - BOX_PAD) < 1e-9 && ( Object.values(g.sides).every((L) => L.length <= 1))) return `\\zx${n.cmd}{${mOnly[1]}}`;
+    const legs = [...g.ports.values()].filter((q) => !q.mid).map((q) => { const st = stubOf(q); return [q.x, -q.y, q.x + st.x, -(q.y + st.y)].map((v) => r2(v * k)).join('/'); });
+    return `\\zxBlock${o.length ? `[${o.join(', ')}]` : ''}${legs.length ? `<${legs.join(', ')}>` : ''}{${r2(W * k)}}{${r2(H * k)}}{${n.lt || !n.label || n.label.includes('$') ? n.label || '' : `$${n.label}$`}}`;   // a box not yet moved to text labels (n.lt)
+  }
+
+  // A text cell (1/sqrt2, a label) half a cell from a spider would run into it on a fixed grid (zxGrid):
+  // it leans away instead. 'L' = its right edge near its cell centre (spider on its right), 'R' the mirror,
+  // 'U' = its bottom edge there (spider below), 'D' the mirror, '' = centred. LaTeX: |[zxTL]| … |[zxTD]|
+  // (zxdiagram.sty). Only on a box diagram (zxGrid) with half cells; a row neighbour wins over a column one.
+  function textLean(d, n) {
+    if (n.t !== 'T' || DOTS_RE.test((n.label || '').trim()) || !d.nodes.some(isBox)) return '';
+    const f = { l: 0, r: 0, u: 0, b: 0 };
+    d.nodes.forEach((m) => {
+      if (m === n || !['Z', 'X', 'H', 'M'].includes(m.t)) return;
+      const dr = m.r - n.r, dc = m.c - n.c;
+      if (dr === 0 && dc > 0 && dc <= 0.5) f.r = 1;
+      if (dr === 0 && dc < 0 && dc >= -0.5) f.l = 1;
+      if (dc === 0 && dr > 0 && dr <= 0.5) f.b = 1;
+      if (dc === 0 && dr < 0 && dr >= -0.5) f.u = 1;
+    });
+    return f.r && !f.l ? 'L' : f.l && !f.r ? 'R' : f.b && !f.u ? 'U' : f.u && !f.b ? 'D' : '';
+  }
+  const DOTS_RE = /^\\[vcd]?dots$|^\\ddots$/;
+
+  // look (optional): { col: wire colours, dots: draw Dots, bw: black-and-white spiders (zxBW), io: Map node id → 'in' | 'out' to mark open ends }
+  function diagramTex(d, ind, look) {
     ind = ind == null ? '    ' : ind;
+    const bun0 = matBundles(d), spread0 = spreadOpts({ edges: plainEdges(d, bun0) });
+    const avoid = avoidOpts(d, spread0);
+    const bg = new Map(d.nodes.filter(isBox).map((n) => [n.id, boxGeom(d, n)])), bk = isHalf(d) ? 2 : 1;
+    const lean = new Map(d.nodes.map((n) => [n.id, textLean(d, n)]));
     d = texGrid(d);
     const b = bounds(d);
     const R = b.r1 - b.r0 + 1, C = b.c1 - b.c0 + 1;
@@ -325,19 +584,37 @@
     const bun = matBundles(d);
     // a bundled side (arrow → arrow) carries no size label, as in the book
     const hideOf = (n) => { const h = { in: false, out: false }; bun.forEach((x) => { if (x.a === n.id) h.out = true; if (x.b === n.id) h.in = true; }); return h; };
-    d.nodes.forEach((n) => { cells[n.r - b.r0][n.c - b.c0] = n.t === 'M' ? nodeTex(n, matForTex(d, n), hideOf(n)) : nodeTex(n); });
-    const spread = spreadOpts({ edges: d.edges.filter((e) => !bun.has(e.id)) });
+    d.nodes.forEach((n) => { cells[n.r - b.r0][n.c - b.c0] = n.t === 'M' ? nodeTex(n, matForTex(d, n), hideOf(n)) : n.t === 'B' ? boxTex(n, bg.get(n.id), bk) : (lean.get(n.id) ? `|[zxT${lean.get(n.id)}]| ` : '') + nodeTex(n, null, null, look); });
+    // empty cells under a box get an invisible filler, so tikz-cd keeps their columns as wide as \zxCellW
+    d.nodes.forEach((n) => {
+      if (!isBox(n)) return;
+      const X = boxExt(n);
+      for (let r = Math.ceil(n.r - X.t * bk); r <= Math.floor(n.r + X.b * bk); r++) for (let c = Math.ceil(n.c - X.l * bk); c <= Math.floor(n.c + X.r * bk); c++) {
+        const row = cells[r - b.r0];
+        if (row && c - b.c0 >= 0 && c - b.c0 < C && row[c - b.c0] === '') row[c - b.c0] = '\\zxN[zxFill]{}';
+      }
+    });
+    const spread = spreadOpts({ edges: plainEdges(d, bun) });
+    // a wire starts where the box's short straight leg ends
+    const portTok = (e, n, w) => { const q = boxPort(bg.get(n.id), e, n), st = stubOf(q); return q ? [`zx${w}={${r2((q.x + st.x) * bk)}}{${r2(-(q.y + st.y) * bk)}}`] : []; };
     d.edges.forEach((e) => {
       const A = byId.get(e.a), B = byId.get(e.b);
       if (!A || !B) return;
       const bu = bun.get(e.id);
       if (bu && !bu.lead) return;
-      cells[A.r - b.r0][A.c - b.c0] += ' ' + arrowTex(A, B, bu ? 'zxBundle' : spread.has(e.id) ? spread.get(e.id) : e.o);
+      let o = bu ? 'zxBundle' : edgeTexOpts(e, avoid.has(e.id) ? avoid.get(e.id) : spread.has(e.id) ? spread.get(e.id) : e.o, look);
+      if (!bu && A !== B && (isBox(A) || isBox(B))) {
+        let toks = splitOpts(o);
+        o = toks.concat(isBox(A) ? portTok(e, A, 'From') : [], isBox(B) ? portTok(e, B, 'To') : []).filter(Boolean).join(', ');
+      }
+      cells[A.r - b.r0][A.c - b.c0] += ' ' + arrowTex(A, B, o);
     });
     const w = Array(C).fill(0);
     cells.forEach((row) => row.forEach((s, j) => { w[j] = Math.max(w[j], s.length); }));
     const lines = cells.map((row) => row.map((s, j) => (j < C - 1 ? s.padEnd(w[j]) : s)).join(' & ').replace(/\s+$/, ''));
-    const head = `${ind}\\zx${d.opts ? `[${d.opts}]` : ''}{`;
+    // bw: black-and-white spiders; zxGrid (last, so it wins): with a box every cell is exactly one cell apart, as on the canvas
+    const opts = (look && look.bw ? ['zxBW'] : []).concat(d.opts ? [d.opts] : [], d.nodes.some(isBox) ? ['zxGrid'] : []).join(', ');
+    const head = `${ind}\\zx${opts ? `[${opts}]` : ''}{`;
     return head + '\n' + lines.map((l, i) => `${ind}  ${l}${i < R - 1 ? ' \\\\' : ''}`).join('\n') + `\n${ind}}`;
   }
 
@@ -347,7 +624,35 @@
   const UNI_RE = new RegExp('[' + Object.keys(UNI).join('') + ']', 'g');
   const unicodeToTex = (t) => t.replace(UNI_RE, (c, at, str) => UNI[c] + (/[A-Za-z]/.test(str[at + 1] || '') && UNI[c][0] === '\\' ? ' ' : ''));
 
-  // o.wrap: wrap in \[ \]; o.only: index of a single diagram; o.perLine: diagrams per \[ \] block; o.starts: canvas line starts
+  // A relation between two diagrams, split into its parts:
+  //   pre (scalar on the left diagram) · rule (e.g. "(sp)" from \stackrel{\mathbf{(sp)}}{=}) · rel (=, \propto …) · post (scalar on the right diagram)
+  // e.g. "\stackrel{\mathbf{(eu)}}{=}\frac{1}{\sqrt{2}}" → { pre: '', rule: '(eu)', rel: '=', post: '\frac{1}{\sqrt{2}}' }
+  const REL_TOKENS = ['\\Leftrightarrow', '\\Rightarrow', '\\propto', '\\approx', '\\simeq', ':=', '∝', '≈', '⇒', '='];
+  function sepSplit(src) {
+    const s = String(src == null ? '' : src).trim();
+    const arg = (j) => {   // {…} starting at j (spaces skipped) → [text, end]
+      while (s[j] === ' ') j++;
+      if (s[j] !== '{') return null;
+      let depth = 0;
+      for (let k = j; k < s.length; k++) { if (s[k] === '{') depth++; else if (s[k] === '}' && --depth === 0) return [s.slice(j + 1, k), k + 1]; }
+      return null;
+    };
+    const st = /\\(stackrel|overset)\s*\{/.exec(s);
+    if (st) {
+      const a = arg(st.index + st[0].length - 1), b = a && arg(a[1]);
+      if (b) {
+        const m = /^\s*\\(mathbf|textbf|text|mathrm)\s*\{([\s\S]*)\}\s*$/.exec(a[0]);
+        return { pre: s.slice(0, st.index).trim(), rule: m ? m[2] : a[0].trim(), rel: b[0].trim(), post: s.slice(b[1]).trim() };
+      }
+    }
+    let best = null;
+    for (const t of REL_TOKENS) { const j = s.indexOf(t); if (j >= 0 && (!best || j < best[0])) best = [j, t]; }
+    if (!best) return { pre: '', rule: '', rel: s, post: '' };
+    return { pre: s.slice(0, best[0]).trim(), rule: '', rel: best[1], post: s.slice(best[0] + best[1].length).trim() };
+  }
+  const sepJoin = (p) => [p.pre, p.rule ? `\\stackrel{\\mathbf{${p.rule}}}{${p.rel || '='}}` : p.rel, p.post].filter(Boolean).join(' ');
+
+  // o.look(d) → diagramTex looks; o.wrap: wrap in \[ \]; o.only: index of a single diagram; o.perLine: diagrams per \[ \] block; o.starts: canvas line starts
   // (each later block starts with the relation that links it to the previous one).
   function docTex(doc, o) {
     o = o || {};
@@ -361,8 +666,8 @@
     const chunks = groups.map((g) => {
       const parts = [];
       g.forEach((di) => {
-        if (o.only == null && di > 0) { const sp = sepAt(di - 1); if (sp) parts.push('    ' + sp); }
-        parts.push(diagramTex(doc.diagrams[di]));
+        if (o.only == null && di > 0) { const sp = sepScalarTex(sepAt(di - 1), (x) => `\\zxScalar{${x}}`); if (sp) parts.push('    ' + sp); }
+        parts.push(diagramTex(doc.diagrams[di], null, o.look ? o.look(doc.diagrams[di]) : null));
       });
       return parts.join('\n');
     });
@@ -675,8 +980,9 @@
   }
 
   root.ZX = {
+    avoidOpts, boxGeom, boxExt, labelMath, stubOf, BOX_STUB, boxPort, boxTex, plainEdges, BOX_PAD,
     parseMatrix, matText, matSides, matInfo, matForTex, matLabels, setPort, matBundles, unbundle, expandMat, expandMats, findMatBlocks, foldMat,
     newId, stripComments, readGroup, splitTop, splitOpts, parseCell, parseBody, parseEquation,
-    findEquations, bounds, isHalf, texGrid, fromHalf, nodeTex, arrowTex, diagramTex, docTex, spreadOpts, newDiagram, fracParts, unicodeToTex,
+    findEquations, bounds, isHalf, texGrid, textLean, fromHalf, nodeTex, arrowTex, diagramTex, docTex, spreadOpts, newDiagram, fracParts, unicodeToTex, sepSplit, sepJoin, sepScalarTex, unScalar,
   };
 })(typeof module !== 'undefined' && module.exports ? module.exports : typeof window !== 'undefined' ? window : self);   // self: inside a Web Worker

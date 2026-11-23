@@ -35,6 +35,7 @@ const I = {
   down: ico('<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>', 16),
   up: ico('<path d="M12 15V4M7 9l5-5 5 5M5 20h14"/>', 16),
   loop: ico('<path d="M12 20v-7"/><path d="M12 13c-4.5-.5-5.5-8 0-8s4.5 7.5 0 8"/>', 16),
+  gbox: '<svg width="20" height="18" viewBox="0 0 20 18" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 9h4M15 9h4M10 1v3"/><rect x="5" y="4" width="10" height="10" rx="1.2" fill="#e9ecf1"/></svg>',
   marrow: '<svg width="22" height="18" viewBox="0 0 26 18"><path d="M1.5 9h23" stroke="currentColor" stroke-width="2.6"/><path d="M8.6 4.4h4.6l4.3 4.6-4.3 4.6H8.6L12.6 9z" fill="#b9b9c2" stroke="currentColor" stroke-width="1.3" stroke-linejoin="miter"/></svg>',
   unfold: ico('<path d="M3 12h4M17 12h4"/><circle cx="9.5" cy="7" r="1.6"/><circle cx="9.5" cy="17" r="1.6"/><circle cx="14.5" cy="7" r="1.6"/><circle cx="14.5" cy="17" r="1.6"/><path d="M11 7h2M11 8l2 8M11 16l2-8"/>', 16),
   rev: ico('<path d="M7 8h13l-3-3M17 16H4l3 3"/>', 16),
@@ -96,7 +97,7 @@ const EXAMPLE = String.raw`\[
 let doc = { diagrams: [], seps: [] };
 let wirePend = null; // wire tool: first node of a click-click connection
 let sel = new Set(), tool = 'select', cam = { x: 0, y: 0, k: 1 }, preview = false;
-let drag = null, pinch = null, spaceDown = false, holdS = false, nbOn = false, nbT = 0, lastWorld = null, activeDi = 0, clip = null;
+let drag = null, pinch = null, spaceDown = false, holdS = false, holdP = false, nbOn = false, nbT = 0, lastWorld = null, activeDi = 0, clip = null;
 let hist = [], redoStack = [];
 const pointers = new Map();
 // A canvas holds several tabs (pages). `doc` is always the open tab's diagrams; each tab keeps
@@ -127,10 +128,20 @@ const at = (d, r, c) => d.nodes.find((n) => n.r === r && n.c === c);
 let gridOn = true;
 try { gridOn = localStorage.getItem('zx-draw-grid-v1') !== '0'; } catch (_) {}
 const STEP = () => (gridOn ? 1 : 0.5);
+// Export looks (switch row at the bottom of LaTeX / Image / TikZ): wire colours, Dots, marked in / out ends
+// Not remembered: every time Export opens they start as LOOK_DEF.
+const LOOK_DEF = { col: true, dots: false, io: false, clr: true };
+let expLook = Object.assign({}, LOOK_DEF);
+try { localStorage.removeItem('zx-draw-explook-v1'); } catch (_) {}   // old saved choice
+const HE_COL = '#4488cc', IN_COL = '#5b5bd6', OUT_COL = '#d9822b';
+// Wire tool kind (see openWirePop)
+const WIRE_KEY = 'zx-draw-wire-v1';
+let wireMode = '';   // '' = plain wire, 'H' = Hadamard edge (the H token: blue dashed, zxHE in LaTeX)
+try { wireMode = localStorage.getItem(WIRE_KEY) === 'H' ? 'H' : ''; } catch (_) {}
 const snapTo = (v) => Math.round(v / STEP()) * STEP();
 const cellOf = (d, p) => ({ r: snapTo((p.y - d.oy) / CH), c: snapTo((p.x - d.ox) / CW) });
 const makeNode = (t, r, c) => Object.assign({ id: ZX.newId('n'), r, c, t, label: t === 'T' ? '\\vdots' : '', cmd: '', v: '', st: '' },
-  t === 'M' ? { label: 'A', lin: '', lout: '', mat: null } : {});
+  t === 'M' ? { label: 'A', lin: '', lout: '', mat: null } : t === 'B' ? { label: '$U$', lt: 1, bl: 0, br: 0, bt: 0, bb: 0, lay: '', fill: '' } : {});
 function findNode(id) { for (const d of doc.diagrams) { const n = d.nodes.find((m) => m.id === id); if (n) return { n, d }; } return null; }
 function findEdge(id) { for (const d of doc.diagrams) { const e = d.edges.find((m) => m.id === id); if (e) return { e, d }; } return null; }
 function frameRect(d) {
@@ -329,7 +340,102 @@ function pickPort(d, n, q) {
   for (let i = 0; i < k; i++) { const dy = Math.abs(q.y - (p.y + mPortY(k, i))); if (dy < best) { best = dy; j = i; } }
   return { side: left ? sl.Lside : sl.Rside, j, x: p.x + (left ? -M_PORT : M_PORT), y: p.y + mPortY(k, j), id: n.id, L: left };
 }
+// ---------- boxes (t 'B'): drawn size and ports come from ZX.boxGeom (shared with the LaTeX export) ----------
+let bxScale = null, bxGeo = null;   // image export: mm per cell and the geometry of the original diagram
+const BOX_COLS = ['', '#ffffff', '#d6d6f5', '#d8f8d8', '#e8a5a5', '#ffffbe', '#cfe3f7', '#f6d5b8'];
+// where wire e meets box n: { at: the port, p: the end of its short straight leg (the wire's own curve starts there) }
+// Ports glide to new places (reorder, resize, a wire making room): each port's drawn offset eases towards
+// its target once per frame; render keeps going while any port is still moving.
+const portAnim = new Map();
+let portFrame = 0, portK = 1, portBusy = false, portLastT = 0, portRaf = 0;
+function animPort(key, q) {
+  let a = portAnim.get(key);
+  if (!a) { a = { x: q.x, y: q.y, f: portFrame }; portAnim.set(key, a); return q; }
+  if (a.f !== portFrame) {
+    a.f = portFrame;
+    a.x += (q.x - a.x) * portK; a.y += (q.y - a.y) * portK;
+    if (Math.abs(q.x - a.x) + Math.abs(q.y - a.y) > 0.004) portBusy = true; else { a.x = q.x; a.y = q.y; }
+  }
+  return Object.assign({}, q, { x: a.x, y: a.y });
+}
+function boxTip(d, n, e, p) {
+  const g = (bxGeo && bxGeo.get(n.id)) || ZX.boxGeom(d, n);
+  let q = ZX.boxPort(g, e, n);
+  if (!q) return null;
+  if (!bxScale) {
+    const end = e.a === n.id ? 'a' : 'b', key = e.id + ':' + end + '@' + n.id, twin = portAnim.get(e.id + '~:' + end + '@' + n.id);
+    if (twin && !portAnim.has(key)) portAnim.set(key, { x: twin.x, y: twin.y, f: -1 });   // a previewed wire lands where its preview was
+    q = animPort(key, q);
+  }
+  const sx = bxScale ? bxScale.x : CW, sy = bxScale ? bxScale.y : CH, st = ZX.stubOf(q);
+  return { at: { x: p.x + q.x * sx, y: p.y + q.y * sy }, p: { x: p.x + (q.x + st.x) * sx, y: p.y + (q.y + st.y) * sy } };
+}
+// the side and offset of box n nearest to world point q (a wire started from / dropped there keeps that side and order)
+function boxPin(d, n, q) {
+  const c = pos(d, n), g = ZX.boxGeom(d, n), dx = (q.x - c.x) / CW - g.cx, dy = (q.y - c.y) / CH - g.cy;   // from the box's centre
+  const hor = Math.abs(dx) / (g.W / 2) >= Math.abs(dy) / (g.H / 2);
+  const s = hor ? (dx < 0 ? 'L' : 'R') : (dy < 0 ? 'T' : 'B'), u = hor ? Math.max(-g.H / 2, Math.min(g.H / 2, dy)) : Math.max(-g.W / 2, Math.min(g.W / 2, dx));
+  const t = u + (hor ? g.cy : g.cx);   // pins are measured from the box's own cell
+  return { id: n.id, box: true, s, t: Math.round(t * 100) / 100, x: hor ? c.x + (g.cx + (dx < 0 ? -1 : 1) * g.W / 2) * CW : c.x + t * CW, y: hor ? c.y + t * CH : c.y + (g.cy + (dy < 0 ? -1 : 1) * g.H / 2) * CH };
+}
+// Magnet for wire ends: the box (edge within MAG px, on its nearest side) or node (centre within MAG px) near q.
+// skip: ids that may not be picked. Returns { node, pin?, x, y } or null.
+const MAG = 26;
+function magnetAt(d, q, skip) {
+  let best = null, bd = Infinity;
+  d.nodes.forEach((n) => {
+    if (n.t === 'T' || (skip && skip.has(n.id))) return;
+    const c = pos(d, n);
+    if (n.t === 'B') {
+      const g = ZX.boxGeom(d, n), x = c.x + g.cx * CW, y = c.y + g.cy * CH;
+      const ox = Math.max(0, Math.abs(q.x - x) - g.W / 2 * CW), oy = Math.max(0, Math.abs(q.y - y) - g.H / 2 * CH), dist = Math.hypot(ox, oy);
+      if (dist <= MAG && dist < bd) { const pin = boxPin(d, n, q); bd = dist; best = { node: n, pin, x: pin.x, y: pin.y }; }
+      return;
+    }
+    const dist = Math.hypot(q.x - c.x, q.y - c.y);
+    if (dist <= MAG && dist < bd) { bd = dist; best = { node: n, x: c.x, y: c.y }; }
+  });
+  return best;
+}
+let pvBorn = { key: '', t: 0 };
+// While a wire end is snapped onto a node, the diagram is drawn as if it were connected: the box's other wires
+// make room and the new wire shows dashed (ve). Returns { src (real edge id, drawn faded), ve, dv } or null.
+function previewFor(d) {
+  if (!drag || drag.d !== d) return null;
+  let src = null, end = 'b', node = null, pin = null, seed = null, ve = null;
+  if (drag.type === 'move' && drag.mag) {
+    const n = d.nodes.find((x) => x.id === drag.ids[0]);
+    src = looseEnd(d, n); if (!src) return null;
+    end = src.a === n.id ? 'a' : 'b'; node = drag.mag.node; pin = drag.mag.pin; seed = dpos(d, n);
+  } else if (drag.type === 'pend' && drag.tgt && drag.tgt.node && drag.tgt.node !== drag.box) {
+    src = drag.e; end = drag.end; node = drag.tgt.node; pin = node.t === 'B' ? drag.tp : null; seed = drag.tp;
+  } else if (drag.type === 'edge' && drag.from && drag.chain.length <= 1 && drag.tgt && drag.tgt.node && drag.tgt.node !== drag.from && drag.tgt.node.t !== 'M') {
+    node = drag.tgt.node; pin = node.t === 'B' ? drag.port : null; seed = drag.tp;
+    ve = { id: '~new', a: drag.from.id, b: node.id, o: wireMode };
+  } else return null;
+  if (src) {
+    ve = Object.assign({}, src, { id: src.id + '~', [end]: node.id });
+    delete ve['p' + end];
+    if (ve[end === 'a' ? 'b' : 'a'] === node.id) return null;
+  }
+  if (pin && pin.s) ve['p' + end] = { s: pin.s, t: pin.t };
+  const key = ve.id + ':' + end + '@' + node.id;
+  if (node.t === 'B' && seed && !portAnim.has(key)) { const c = pos(d, node); portAnim.set(key, { x: (seed.x - c.x) / CW, y: (seed.y - c.y) / CH, f: -1 }); }   // slides in from where the end is
+  return { src: src ? src.id : null, ve, dv: Object.assign({}, d, { edges: src ? d.edges.map((e) => (e === src ? ve : e)) : d.edges.concat([ve]) }) };
+}
+// a loose wire end: an unlabelled point with exactly one wire
+const looseEnd = (d, n) => { if (!n || (n.t !== 'N' && n.t !== 'P') || n.label || n.cmd) return null; const es = d.edges.filter((e) => e.a === n.id || e.b === n.id); return es.length === 1 && es[0].a !== es[0].b ? es[0] : null; };
 function rawGeom(d, e, A, B, P = pos) {
+  const ta = A !== B && A.t === 'B' ? boxTip(d, A, e, P(d, A)) : null, tb = A !== B && B.t === 'B' ? boxTip(d, B, e, P(d, B)) : null;
+  if (!ta && !tb) return rawGeom0(d, e, A, B, P);
+  // box ends: straight leg, then the wire's own shape between the legs' ends
+  const g = rawGeom0(d, e, A, B, (dd, n) => (n === A && ta ? ta.p : n === B && tb ? tb.p : P(dd, n)));
+  g.d = (ta ? `M${ta.at.x} ${ta.at.y}L` : 'M') + g.d.slice(1) + (tb ? `L${tb.at.x} ${tb.at.y}` : '');
+  g.pts = [ta ? ta.at : null].concat(g.pts, [tb ? tb.at : null]).filter(Boolean);
+  g.line = false;
+  return g;
+}
+function rawGeom0(d, e, A, B, P = pos) {
   let p0 = P(d, A), p1 = P(d, B);
   if (A !== B && A.t === 'M') p0 = mTip(d, A, e, p0);
   if (A !== B && B.t === 'M') p1 = mTip(d, B, e, p1);
@@ -386,8 +492,21 @@ function rawGeom(d, e, A, B, P = pos) {
 // Wires between the same two nodes must never sit exactly on top of each other.
 // Wires with an identical shape are fanned out sideways (loops grow outward); crossings are fine.
 const PAR_GAP = 16;
+// wires that would run under a node they are not wired to get a bend (ZX.avoidOpts, same as in export)
+const avoidCache = new WeakMap();
+function avoidMap(d) {
+  const sig = d.nodes.map((n) => n.id + ':' + n.r + ',' + n.c).join(' ') + '|' + d.edges.map((e) => e.a + '>' + e.b + ':' + e.o).join(' ');
+  const c = avoidCache.get(d);
+  if (c && c.sig === sig) return c.m;
+  const m = ZX.avoidOpts(d);
+  avoidCache.set(d, { sig, m });
+  return m;
+}
 function edgeGeom(d, e, A, B, P = pos) {
+  const av = avoidMap(d);
+  if (av.has(e.id)) e = Object.assign({}, e, { o: av.get(e.id) });
   const g = rawGeom(d, e, A, B, P);
+  if (A.t === 'B' || B.t === 'B') return g;   // a box gives every wire its own port
   const sib = d.edges.filter((f) => (f.a === e.a && f.b === e.b) || (f.a === e.b && f.b === e.a));
   if (sib.length < 2) return g;
   // shape key in a fixed direction (lower node id first), so a→b bend left matches b→a bend right
@@ -397,7 +516,7 @@ function edgeGeom(d, e, A, B, P = pos) {
     return q.map((p) => Math.round(p.x * 2) + ',' + Math.round(p.y * 2)).join(' ') + (gg.h ? 'H' : '');
   };
   const me = key(e, g);
-  const same = sib.filter((f) => f === e || key(f, rawGeom(d, f, f.a === e.a ? A : B, f.a === e.a ? B : A, P)) === me);
+  const same = sib.filter((f) => f === e || key(f, rawGeom(d, av.has(f.id) ? Object.assign({}, f, { o: av.get(f.id) }) : f, f.a === e.a ? A : B, f.a === e.a ? B : A, P)) === me);
   const n = same.length;
   if (n < 2) return g;
   const i = same.indexOf(e);
@@ -483,11 +602,18 @@ function mArrowInner(n, d) {
     + lab(n.label, 'ml-a') + (sl.bL && !(fl ? n.lout : n.lin) ? '' : lab(fl ? L.lout : L.lin, 'ml-l')) + (sl.bR && !(fl ? n.lin : n.lout) ? '' : lab(fl ? L.lin : L.lout, 'ml-r'));
 }
 function nodeHTML(n, p, s, io, d) {
-  let cls = 'node t' + n.t, inner = '', warn = '', hs = '';
+  let cls = 'node t' + n.t, inner = '', warn = '', hs = '', ox = 0, oy = 0;
   if (n.t === 'M') {
     inner = mArrowInner(n, d); warn = d ? matWarn(d, n) : '';
     if (warn) cls += ' warn';
     hs = `;height:${mHeight(mSlots(d, n))}px`;
+  }
+  if (n.t === 'B') {
+    const g = ZX.boxGeom(d || { nodes: [n], edges: [] }, n);
+    inner = `<span class="bxl${n.vt ? ' vt' : ''}">${tex(ZX.labelMath(n.label))}</span>`;
+    hs = `;width:${(g.W * CW).toFixed(1)}px;height:${(g.H * CH).toFixed(1)}px${n.fill ? `;--bx:${n.fill}` : ''}`;
+    ox = g.cx * CW; oy = g.cy * CH;   // reaches further on one side: drawn off its own cell
+    if (s && sel.size === 1 && (tool === 'select' || tool === 'B')) inner += ['l', 'r', 't', 'b'].map((k) => `<i class="bxh ${k}" data-bres="${k}"></i>`).join('');
   }
   if (io) cls += io[0] === 'i' ? ' bin' : ' bout';
   if (n.t === 'Z' || n.t === 'X') {
@@ -502,10 +628,35 @@ function nodeHTML(n, p, s, io, d) {
   }
   if (s) cls += ' sel';
   const fx = p.s != null ? `;transform:translate(-50%,-50%) scale(${p.s.toFixed(3)});opacity:${Math.min(1, p.s * 1.4).toFixed(3)}` : '';
-  return `<div class="${cls}" data-node="${n.id}"${io ? ` data-io="${io}"` : ''}${warn ? ` data-warn="${esc(warn)}"` : ''} style="left:${p.x}px;top:${p.y}px${hs}${fx}">${inner}</div>`;
+  return `<div class="${cls}" data-node="${n.id}"${io ? ` data-io="${io}"` : ''}${warn ? ` data-warn="${esc(warn)}"` : ''} style="left:${p.x + ox}px;top:${p.y + oy}px${hs}${fx}">${inner}</div>`;
 }
 
+// Every wire at a box keeps the side and place it entered at (a pin), so moving other things never reorders them.
+function pinBoxWires() {
+  doc.diagrams.forEach((d) => d.nodes.forEach((n) => {
+    // box labels used to be math as a whole; now text with math in $…$ (n.lt): old ones get their $…$ once
+    if (n.t === 'B' && !n.lt) { const l = (n.label || '').trim(); if (l && !l.includes('$')) n.label = `$${l}$`; n.lt = 1; }
+    if (n.t !== 'B') return;
+    let g = null;
+    d.edges.forEach((e) => {
+      if (e.a === e.b) return;
+      ['a', 'b'].forEach((end) => {
+        const k = 'p' + end;
+        if (e[end] !== n.id || e[k]) return;
+        g = g || ZX.boxGeom(d, n);
+        const q = g.ports.get(e.id + ':' + end);
+        if (q) e[k] = { s: q.s, t: Math.round((q.s === 'L' || q.s === 'R' ? q.y : q.x) * 100) / 100 };
+      });
+    });
+  }));
+}
 function render() {
+  pinBoxWires();
+  { const now = performance.now(); portFrame++; portK = portLastT ? 1 - Math.exp(-Math.min(34, now - portLastT) / 36) : 1; portLastT = now; portBusy = false; }
+  let pvShown = false;
+  // the preview is rebuilt on every redraw: its fade / pop keep their phase (negative delay) and replay only for a new target
+  const pvAge = () => { const k = drag && (drag.mag ? drag.mag.node.id : drag.tgt && drag.tgt.node ? drag.tgt.node.id : ''); const now = performance.now(); if (k !== pvBorn.key) pvBorn = { key: k, t: now }; const a = -(now - pvBorn.t) | 0; return `animation-delay:${a}ms,${a}ms`; };
+  if (fanPar && sel.size < 2 && !holdP) fanPar = false;   // parallel wiring ends with the selection
   const F = [], S = [], N = [], T = [], H = [];
   if (doc.single && doc.diagrams.length > 1) doc.single = false;   // e.g. an import added diagrams
   const single = !!doc.single;
@@ -526,9 +677,16 @@ function render() {
       <button data-act="del" data-fi="${di}" class="danger" title="Delete diagram">${I.trash}</button></div>`);
     const byId = new Map(d.nodes.map((n) => [n.id, n]));
     const bun = ZX.matBundles(d);
-    d.edges.forEach((e) => {
+    const pv = previewFor(d), dv = pv ? pv.dv : d;
+    if (pv) {
+      pvShown = true;
+      const src = pv.src && d.edges.find((e) => e.id === pv.src), A = src && byId.get(src.a), B = src && byId.get(src.b);
+      if (A && B) S.push(`<g class="edge pv-src" style="${pvAge()}"><path class="wire-p" d="${rawGeom(d, src, A, B, dpos).d}"/></g>`);   // where it is now, faded
+    }
+    dv.edges.forEach((e) => {
       const A = byId.get(e.a), B = byId.get(e.b);
       if (!A || !B) return;
+      if (pv && e === pv.ve) { S.push(`<g class="edge pv" style="${pvAge()}"><path class="wire-p" d="${rawGeom(dv, e, A, B, dpos).d}"/></g>`); return; }   // how it would connect
       const bu = bun.get(e.id);
       if (bu && !bu.lead) return;
       if (bu) {
@@ -536,22 +694,44 @@ function render() {
         S.push(`<g class="edge bundle${on ? ' sel' : ''}" data-edge="${e.id}"><path class="hit" d="${g.d}"/><path class="wire-p" d="${g.d}"/></g>`);
         return;
       }
-      const g = edgeGeom(d, e, A, B, dpos);
-      S.push(`<g class="edge${sel.has(e.id) ? ' sel' : ''}${drag && drag.dropId === e.id ? ' drop' : ''}${wireLook(e)}" data-edge="${e.id}"${e.col ? ` style="--wc:${wcol(e.col)}"` : ''}><path class="hit" d="${g.d}"/><path class="wire-p" d="${g.d}"/>${g.h ? `<rect class="hbox" x="${g.m.x - 7}" y="${g.m.y - 7}" width="14" height="14"/>` : ''}</g>`);
+      const g = edgeGeom(dv, e, A, B, dpos);
+      S.push(`<g class="edge${sel.has(e.id) ? ' sel' : ''}${drag && drag.dropId === e.id ? ' drop' : ''}${wireLook(e)}${g.h ? ' hedge' : ''}" data-edge="${e.id}"${e.col ? ` style="--wc:${wcol(e.col)}"` : ''}><path class="hit" d="${g.d}"/><path class="wire-p" d="${g.d}"/></g>`);
       const bh = tool === 'select' && sel.size === 1 && sel.has(e.id) && (!tween || tweenK >= 1) && bendHandle(d, e, A, B, g);
       if (bh) {
         const on = drag && drag.type === 'bend' && drag.e === e;
-        H.push(`<g class="bend-h${on ? ' on' : ''}" data-bend="${e.id}"><circle class="bh-hit" cx="${bh.x}" cy="${bh.y}" r="14"/><circle class="bh-dot${g.h ? ' ring' : ''}" cx="${bh.x}" cy="${bh.y}" r="${g.h ? 12 : 5.5}"/>${on ? `<text x="${bh.x + 14}" y="${bh.y - 12}">${drag.deg ? drag.deg + '°' : 'straight'}</text>` : ''}</g>`);
+        H.push(`<g class="bend-h${on ? ' on' : ''}" data-bend="${e.id}"><circle class="bh-hit" cx="${bh.x}" cy="${bh.y}" r="14"/><circle class="bh-dot" cx="${bh.x}" cy="${bh.y}" r="5.5"/>${on ? `<text x="${bh.x + 14}" y="${bh.y - 12}">${drag.deg ? drag.deg + '°' : 'straight'}</text>` : ''}</g>`);
       }
     });
+    // grab handles where wires meet a box (box or wire selected): drag along the box to move / reorder, elsewhere to reconnect
+    if (tool === 'select' && !preview && (!tween || tweenK >= 1)) dv.edges.forEach((e) => {
+      if (e.a === e.b || (pv && e === pv.ve)) return;
+      ['a', 'b'].forEach((end) => {
+        const bx = byId.get(e[end]);
+        if (!bx || bx.t !== 'B') return;
+        const on = drag && drag.type === 'pend' && drag.e === e && drag.end === end;
+        if (!on && !sel.has(e.id) && !(sel.size === 1 && sel.has(bx.id))) return;
+        const tp = boxTip(dv, bx, e, dpos(d, bx));
+        if (tp) H.push(`<g class="bend-h pend-h${on ? ' on' : ''}" data-pend="${e.id}:${end}"><circle class="bh-hit" cx="${tp.at.x}" cy="${tp.at.y}" r="10"/><circle class="bh-dot" cx="${tp.at.x}" cy="${tp.at.y}" r="4.2"/></g>`);
+      });
+    });
+    if (drag && drag.type === 'move' && drag.mag && drag.d === d) {
+      const n = d.nodes.find((x) => x.id === drag.ids[0]), q = n && dpos(d, n), m = drag.mag;
+      if (q && !pv) S.push(`<path class="ghost-line" d="M${q.x} ${q.y}L${m.x} ${m.y}"/>`);
+      S.push(`<circle class="mag-dot" cx="${m.x}" cy="${m.y}" r="7" style="${pvAge()}"/>`);
+    }
+    if (drag && drag.type === 'pend' && drag.d === d && drag.tp && !pv) {
+      const o = byId.get(drag.e[drag.end === 'a' ? 'b' : 'a']), q = o && dpos(d, o);
+      if (q) S.push(`<path class="ghost-line" d="M${q.x} ${q.y}L${drag.tp.x} ${drag.tp.y}"/>`);
+      if (!drag.tgt.node) S.push(`<circle class="ghost-dot" cx="${drag.tp.x}" cy="${drag.tp.y}" r="6"/>`);
+    }
     const io = ioMap(d);
-    d.nodes.forEach((n) => { const p = dpos(d, n); lastDisp.set(n.id, { x: p.x, y: p.y }); const h = nodeHTML(n, p, sel.has(n.id), io.get(n.id), d); N.push((wirePend && wirePend.n === n) || (tool === 'edge' && sel.size > 1 && sel.has(n.id)) ? h.replace('class="node', 'class="node wfrom') : h); });
+    d.nodes.forEach((n) => { const p = dpos(d, n); lastDisp.set(n.id, { x: p.x, y: p.y }); const h = nodeHTML(n, p, sel.has(n.id), io.get(n.id), dv); N.push((wirePend && wirePend.n === n) || (tool === 'edge' && sel.size > 1 && sel.has(n.id)) ? h.replace('class="node', 'class="node wfrom') : h); });
   });
   const starts = lineStarts();
   for (let i = 0; i + 1 < rects.length; i++) {
     const { x, y } = sepPoint(i, rects, starts);
     const sv = sepOf(i);
-    T.push(sv ? `<div class="sep" data-sep="${i}" style="left:${x}px;top:${y}px" title="Click to edit">${tex(sv)}${sepBadge(i)}</div>`
+    T.push(sv ? `<div class="sep" data-sep="${i}" style="left:${x}px;top:${y}px" title="Click to edit">${sepHTML(sv)}${sepBadge(i)}</div>`
       : `<div class="sep empty" data-sep="${i}" style="left:${x}px;top:${y}px" title="No relation — click to add one">${I.plus}</div>`);
     T.push(`<button class="sepins" data-ins="${i}" style="left:${x}px;top:${y + (sv && /stackrel/.test(sv) ? 50 : 40)}px" title="Insert an empty diagram here">${I.plus}</button>`);
   }
@@ -569,14 +749,19 @@ function render() {
     const l = rects[rects.length - 1];
     T.push(`<button class="addd" data-add style="left:${l.x1 + CW * 1.4}px;top:${(l.y0 + l.y1) / 2}px" title="Add a diagram">${I.plus}</button>`);
   }
-  if (drag && drag.type === 'edge' && drag.tp) {
+  if (drag && drag.type === 'edge' && drag.tp && !pvShown) {
     S.push(`<path class="ghost-line" d="M${drag.p0.x} ${drag.p0.y}L${drag.tp.x} ${drag.tp.y}"/>`);
     if (!drag.tgt.node) S.push(`<circle class="ghost-dot" cx="${drag.tp.x}" cy="${drag.tp.y}" r="6"/>`);
   }
   if (!drag && tool === 'edge' && fanTp) {
     const fd = doc.diagrams.find((d) => d.nodes.some((n) => sel.has(n.id)));
     const ss = fd ? fanSources(fd) : [];
-    if (ss.length >= fanMin()) ss.forEach((n) => { const q = pos(fd, n); S.push(`<path class="ghost-line fan" d="M${q.x} ${q.y}L${fanTp.x} ${fanTp.y}"/>`); });
+    if (ss.length >= fanMin() && fanPar) parTargets(ss, { r: (fanTp.y - fd.oy) / CH, c: (fanTp.x - fd.ox) / CW }).forEach(({ s: n, r, c }) => {
+      const q = pos(fd, n), x = fd.ox + c * CW, y = fd.oy + r * CH;
+      S.push(`<path class="ghost-line fan par" d="M${q.x} ${q.y}L${x} ${y}"/>`);
+      if (!at(fd, r, c)) S.push(`<circle class="ghost-dot" cx="${x}" cy="${y}" r="5"/>`);
+    });
+    else if (ss.length >= fanMin()) ss.forEach((n) => { const q = pos(fd, n); S.push(`<path class="ghost-line fan" d="M${q.x} ${q.y}L${fanTp.x} ${fanTp.y}"/>`); });
   }
   if (!drag && wirePend && wirePend.tp && doc.diagrams.includes(wirePend.d)) {
     const q = wirePend.port || pos(wirePend.d, wirePend.n);
@@ -584,6 +769,7 @@ function render() {
   }
   if (drag && drag.type === 'ghost' && drag.tp) N.push(nodeHTML(drag.n, drag.tp, false).replace('class="node', 'class="node ghost'));
   world.innerHTML = F.join('') + `<svg class="edges" width="1" height="1">${S.join('')}</svg>` + N.join('') + (H.length ? `<svg class="edges handles" width="1" height="1">${H.join('')}</svg>` : '') + T.join('');
+  if (portBusy && !portRaf) portRaf = requestAnimationFrame(() => { portRaf = 0; render(); });
   if (nbOn) showNb();
   $('#hint').hidden = doc.diagrams.some((d) => d.nodes.length);
   $('#dUndo').disabled = !hist.length;
@@ -598,11 +784,23 @@ function render() {
 function applyCam() {
   world.style.transform = `translate(${cam.x}px,${cam.y}px) scale(${cam.k})`;
   // grid dots: lighter and sparser when zoomed out, darker when zoomed in
+  // grid dots: lighter and sparser when zoomed out, darker when zoomed in.
+  // Half grid adds smaller, lighter dots half way between (unless zoomed far out); the eye hides all of them.
   const k = cam.k, step = k < 0.3 ? 4 : k < 0.55 ? 2 : 1;
   const alpha = Math.max(0.1, Math.min(0.8, 0.12 + 0.45 * k)), rad = Math.max(0.85, Math.min(1.7, 0.8 + 0.55 * k));
-  vp.style.setProperty('--gi', `radial-gradient(circle, rgba(112,112,104,${alpha.toFixed(3)}) ${rad.toFixed(2)}px, transparent ${(rad + 0.45).toFixed(2)}px)`);
-  vp.style.setProperty('--gs', `${CW * k * step}px ${CH * k * step}px`);
-  vp.style.setProperty('--gp', `${cam.x - CW * k * step / 2}px ${cam.y - CH * k * step / 2}px`);
+  const dotImg = (a, r) => `radial-gradient(circle, rgba(112,112,104,${a.toFixed(3)}) ${r.toFixed(2)}px, transparent ${(r + 0.45).toFixed(2)}px)`;
+  const tile = (st) => [`${CW * k * st}px ${CH * k * st}px`, `${cam.x - CW * k * st / 2}px ${cam.y - CH * k * st / 2}px`];
+  const [s1, p1] = tile(step);
+  if (!gridOn && k >= 0.3) {
+    const hs = step / 2, [s2, p2] = tile(hs);
+    vp.style.setProperty('--gi', `${dotImg(alpha, rad)}, ${dotImg(alpha * 0.6, Math.max(0.7, rad * 0.62))}`);
+    vp.style.setProperty('--gs', `${s1}, ${s2}`);
+    vp.style.setProperty('--gp', `${p1}, ${p2}`);
+  } else {
+    vp.style.setProperty('--gi', dotImg(alpha, rad));
+    vp.style.setProperty('--gs', s1);
+    vp.style.setProperty('--gp', p1);
+  }
   positionInsp();
   positionPop();
   const zp = $('#zPct'); if (zp) zp.textContent = Math.round(cam.k * 100) + '%';
@@ -838,11 +1036,12 @@ window.addEventListener('pointercancel', () => endSlide(false));
 
 // ---------- tools ----------
 function setTool(t) {
+  if (t !== 'edge') fanPar = false;
   tool = t;
   wirePend = null; mNear = mHot = null;
   document.querySelectorAll('.tool[data-tool]').forEach((b) => b.classList.toggle('on', b.dataset.tool === t));
   syncPill($('#dock'));
-  vp.classList.toggle('place', ['Z', 'X', 'H', 'N', 'T', 'P', 'M'].includes(t));
+  vp.classList.toggle('place', ['Z', 'X', 'H', 'N', 'T', 'P', 'M', 'B'].includes(t));
   vp.classList.toggle('wire', t === 'edge');
   vp.classList.toggle('hand', t === 'hand');
 }
@@ -859,46 +1058,44 @@ function placeNode(p, t) {
   }, 220);
 }
 
-// Insert node n into wire e near point p. Uses a free grid cell on the wire,
-// otherwise opens a new column (or row) so it fits.
+// Insert node n into wire e near point p. Uses a free spot on the wire (whole cells with the grid on,
+// half cells too with it off), otherwise opens a new column (or row) of that size so it fits.
 function insertIntoEdge(d, e, p, n) {
   const A = d.nodes.find((m) => m.id === e.a), B = d.nodes.find((m) => m.id === e.b);
-  const dr = B.r - A.r, dc = B.c - A.c, click = cellOf(d, p);
+  const s = STEP(), dr = B.r - A.r, dc = B.c - A.c, click = cellOf(d, p);
   let cell = null;
   if (!dr || !dc) {
-    const steps = Math.max(Math.abs(dr), Math.abs(dc)), free = [];
-    for (let k = 1; k < steps; k++) { const r = A.r + Math.sign(dr) * k, c = A.c + Math.sign(dc) * k; if (!at(d, r, c)) free.push({ r, c }); }
+    const steps = Math.round(Math.max(Math.abs(dr), Math.abs(dc)) / s), free = [];
+    for (let k = 1; k < steps; k++) { const r = A.r + Math.sign(dr) * k * s, c = A.c + Math.sign(dc) * k * s; if (!at(d, r, c)) free.push({ r, c }); }
     const dist = (q) => Math.hypot(q.r - click.r, q.c - click.c);
     if (free.length) cell = free.reduce((a, b) => (dist(a) <= dist(b) ? a : b));
   } else if (!at(d, click.r, click.c)) cell = click;
   if (!cell) {
-    if (!dr) { const cut = Math.max(A.c, B.c); d.nodes.forEach((m) => { if (m.c >= cut) m.c++; }); cell = { r: A.r, c: cut }; }
-    else if (!dc) { const cut = Math.max(A.r, B.r); d.nodes.forEach((m) => { if (m.r >= cut) m.r++; }); cell = { r: cut, c: A.c }; }
-    else { const L = A.c < B.c ? A : B, cut = L.c + 1; d.nodes.forEach((m) => { if (m.c >= cut) m.c++; }); cell = { r: L.r, c: cut }; }
+    if (!dr) { const cut = Math.max(A.c, B.c); d.nodes.forEach((m) => { if (m.c >= cut) m.c += s; }); cell = { r: A.r, c: cut }; }
+    else if (!dc) { const cut = Math.max(A.r, B.r); d.nodes.forEach((m) => { if (m.r >= cut) m.r += s; }); cell = { r: cut, c: A.c }; }
+    else { const L = A.c < B.c ? A : B, cut = L.c + s; d.nodes.forEach((m) => { if (m.c >= cut) m.c += s; }); cell = { r: L.r, c: cut }; }
   }
   n.r = cell.r; n.c = cell.c;
   if (!d.nodes.includes(n)) d.nodes.push(n);
   d.edges = d.edges.filter((x) => x !== e);
-  const look = { ...(e.col ? { col: e.col } : {}), ...(e.ls ? { ls: e.ls } : {}) };   // the halves keep the wire's colour and style
-  d.edges.push({ id: ZX.newId('e'), a: e.a, b: n.id, o: '', ...look }, { id: ZX.newId('e'), a: n.id, b: e.b, o: '', ...look });
+  const look = e.col ? { col: e.col } : {};   // the halves keep the wire's colour; a Hadamard edge stays one (on the first half)
+  const h = ZX.splitOpts(e.o || '').includes('H') ? 'H' : '';
+  d.edges.push({ id: ZX.newId('e'), a: e.a, b: n.id, o: h, ...look }, { id: ZX.newId('e'), a: n.id, b: e.b, o: '', ...look });
 }
 // ---------- wire colour and line style (for your own eyes: no meaning, not in LaTeX) ----------
 const WIRE_COLS = ['', '#f07c7c', '#f4a261', '#e9c46a', '#7cc68d', '#5ec4b6', '#6cb2f0', '#8b8ff0', '#b58be8', '#ef8fc0'];
 // wires coloured with the first palette keep their slot
 const OLD_COLS = { '#e5484d': 1, '#f76b15': 2, '#e2a336': 3, '#30a46c': 4, '#12a594': 5, '#0090ff': 6, '#5b5bd6': 7, '#8e4ec6': 8, '#d6409f': 9 };
 const wcol = (c) => (c && OLD_COLS[c] ? WIRE_COLS[OLD_COLS[c]] : c || '');
-const WIRE_LS = [['', 'Solid', 'M2 8H22'], ['dash', 'Dashed', 'M2 8H22'], ['dot', 'Dotted', 'M2 8H22']];
-const wireLook = (e) => (e.col ? ' colored' : '') + (e.ls ? ' ls-' + e.ls : '');
+const wireLook = (e) => (e.col ? ' colored' : '');   // solid / dashed / dotted is retired: dashed blue now means a Hadamard edge
 function wireLookRow() {
-  return `<div class="row wlook"><div class="wcols">${WIRE_COLS.map((c, i) => `<button class="wc${c ? '' : ' none'}" data-i="wcol" data-v="${c}" style="--c:${c || '#3a3a3c'}" title="${c ? 'Colour ' + i : 'Default'}"></button>`).join('')}</div><span class="vsep"></span>
-    <div class="seg sm" data-seg="ls">${WIRE_LS.map(([v, t, d]) => `<button data-i="wls" data-v="${v}" title="${t}"><svg width="24" height="16" viewBox="0 0 24 16"><path d="${d}" class="lsi${v ? ' ls-' + v : ''}"/></svg></button>`).join('')}</div></div>`;
+  return `<div class="row wlook"><div class="wcols">${WIRE_COLS.map((c, i) => `<button class="wc${c ? '' : ' none'}" data-i="wcol" data-v="${c}" style="--c:${c || '#3a3a3c'}" title="${c ? 'Colour ' + i : 'Default'}"></button>`).join('')}</div>
+</div>`;
 }
 function syncWireLook(edges) {
   if (!edges.length) return;
   const col = edges.every((x) => wcol(x.e.col) === wcol(edges[0].e.col)) ? wcol(edges[0].e.col) : null;
-  const ls = edges.every((x) => (x.e.ls || '') === (edges[0].e.ls || '')) ? edges[0].e.ls || '' : null;
   insp.querySelectorAll('[data-i="wcol"]').forEach((b) => b.classList.toggle('on', b.dataset.v === col));
-  insp.querySelectorAll('[data-i="wls"]').forEach((b) => b.classList.toggle('on', b.dataset.v === ls));
 }
 // Take node n out of the diagram; if it sat on a wire (one in, one out) the wire is rejoined.
 function detachNode(d, n) {
@@ -1273,8 +1470,9 @@ function rotateDiagram(i) {
   snapshot();
   animate(() => {
     const b = ZX.bounds(d);
-    d.nodes.forEach((n) => { n.r = b.r0 + b.r1 - n.r; n.c = b.c0 + b.c1 - n.c; if (n.t === 'M') n.v = n.v === '<' ? '' : '<'; });
-    d.edges.forEach((e) => { e.o = ZX.splitOpts(e.o || '').map(rotTok).join(', '); });
+    d.nodes.forEach((n) => { n.r = b.r0 + b.r1 - n.r; n.c = b.c0 + b.c1 - n.c; if (n.t === 'M') n.v = n.v === '<' ? '' : '<'; if (n.t === 'B') { const X = ZX.boxExt(n); n.bl = X.r; n.br = X.l; n.bt = X.b; n.bb = X.t; delete n.bw; delete n.bh; } });
+    const FLIP = { L: 'R', R: 'L', T: 'B', B: 'T' };
+    d.edges.forEach((e) => { e.o = ZX.splitOpts(e.o || '').map(rotTok).join(', '); ['pa', 'pb'].forEach((k) => { if (e[k]) e[k] = { s: FLIP[e[k].s], t: -e[k].t }; }); });
   }, 420);
   activeDi = i;
   toast('Rotated 180° — ⌘Z to undo');
@@ -1338,6 +1536,7 @@ function updateInspector() {
   if (sig !== inspSig && !typing) { inspSig = sig; insp.innerHTML = buildInsp(nodes, edges); }
   insp.hidden = false;
   insp.classList.toggle('mpanel', nodes.length === 1 && !edges.length && nodes[0].n.t === 'M');
+  insp.classList.toggle('bxpanel', nodes.length === 1 && !edges.length && nodes[0].n.t === 'B');
   refreshInsp(nodes, edges);
   syncWireLook(edges);
   syncAllPills(insp);
@@ -1350,10 +1549,12 @@ function buildInsp(nodes, edges) {
     return `<div class="row"><span class="count">${nodes.length ? nodes.length + ' node' + (nodes.length > 1 ? 's' : '') : ''}${nodes.length && edges.length ? ' · ' : ''}${edges.length ? edges.length + ' wire' + (edges.length > 1 ? 's' : '') : ''}</span>
       ${zx ? `<button class="ib" data-i="swap" title="Swap Z ↔ X colour (C)">${I.swap}</button>` : ''}
       ${selBlock() ? `<button class="ib m-conv" data-i="tomat" title="Convert to matrix arrow (⇧A)">${I.marrow}</button>` : ''}
+      ${edges.length ? `<button class="ib" data-i="hbox" title="Hadamard edge ⇄ plain wire (H)"><span class="sw HE"></span></button>` : ''}
       ${nodes.length ? `<button class="ib" data-i="copy" title="Copy (⌘C)">${I.copy}</button>` : ''}
       <button class="ib danger" data-i="del" title="Delete (⌫)">${I.trash}</button></div>${edges.length ? wireLookRow() : ''}`;
   }
   if (nodes.length && nodes[0].n.t === 'M') return buildMatInsp(nodes[0].n);
+  if (nodes.length && nodes[0].n.t === 'B') return buildBoxInsp();
   if (nodes.length) {
     const types = [['Z', '', 'Z spider'], ['X', '', 'X spider'], ['H', '', 'H box'], ['N', 'wire', 'Wire point / boundary'], ['P', '', 'Dot: routing point (bends, swaps, crossings)'], ['T', '', 'Text cell (\\vdots, \\cdots …)']].map(([t, l, ti]) =>
       `<button data-i="type" data-v="${t}" title="${ti}">${t === 'T' ? `<span class="ti-t">${I.text}</span>` : `<span class="sw ${t}"></span>`}${l}</button>`).join('');
@@ -1371,16 +1572,17 @@ function buildInsp(nodes, edges) {
   const curves = self ? ['loop above', 'loop below', 'loop left', 'loop right'].map((t) => `<button data-i="curve" data-v="${t}">${t.split(' ')[1]}</button>`).join('')
     : CURVES.map(([t, l, ic]) => `<button data-i="curve" data-v="${t}" title="${l}">${ic}</button>`).join('');
   return `<div class="row"><div class="seg" data-seg="${self ? 'loop' : 'curve'}">${curves}</div><span class="vsep"></span>
-      <button class="ib" data-i="hbox" title="Hadamard box on this wire (H style)"><span class="sw H"></span></button>
+      <button class="ib" data-i="hbox" title="Hadamard edge (H)"><span class="sw HE"></span></button>
       ${self ? '' : `<button class="ib" data-i="rev" title="Reverse direction (changes which cell the \\ar lives in)">${I.rev}</button>`}
       <button class="ib danger" data-i="del" title="Delete (⌫)">${I.trash}</button></div>
     ${wireLookRow()}
-    <div class="row"><label class="field"><span>TikZ</span><input data-i="opts" placeholder="e.g. bend left=40, H" spellcheck="false" autocomplete="off"></label></div>`;
+    <div class="row"><label class="field"><span>TikZ</span><input data-i="opts" placeholder="e.g. bend left=40" spellcheck="false" autocomplete="off"></label></div>`;
 }
 function refreshInsp(nodes, edges) {
   if (nodes.length + edges.length !== 1) return;
   const ae = document.activeElement;
   if (nodes.length && nodes[0].n.t === 'M') return refreshMatInsp(nodes[0].n, nodes[0].d);
+  if (nodes.length && nodes[0].n.t === 'B') return refreshBoxInsp(nodes[0].n);
   if (nodes.length) {
     const n = nodes[0].n, sp = n.t === 'Z' || n.t === 'X' || n.t === 'T';
     const fl = insp.querySelector('[data-c="phase"] .field > span');
@@ -1400,6 +1602,45 @@ function refreshInsp(nodes, edges) {
     const inp = insp.querySelector('input[data-i="opts"]');
     if (inp && ae !== inp) inp.value = e.o;
   }
+  syncAllPills(insp);
+}
+// ---------- box panel: label, port layout, colour ----------
+const BOX_LABELS = ['I', 'X', 'Y', 'Z', 'U', 'U^\\dagger', '\\vec{P}', 'P_n'].map((v) => `$${v}$`);
+// box size in grid points (cells it covers), changed half a cell at a time; the box stays as centred as it can
+const boxSpan = (n, ax) => { const X = ZX.boxExt(n); return ax === 'w' ? X.l + X.r + 1 : X.t + X.b + 1; };
+function setBoxSpan(n, ax, v) {
+  const X = ZX.boxExt(n), [a, b] = ax === 'w' ? ['l', 'r'] : ['t', 'b'];
+  let ext = Math.max(0, Math.min(40, Math.round((v - 1) * 2) / 2)), cur = X[a] + X[b];
+  while (cur < ext) { if (X[b] <= X[a]) X[b] += 0.5; else X[a] += 0.5; cur += 0.5; }
+  while (cur > ext) { if (X[b] >= X[a] && X[b] > 0) X[b] -= 0.5; else X[a] -= 0.5; cur -= 0.5; }
+  if (X[a] < 0) { X[b] += X[a]; X[a] = 0; }
+  animate(() => { n.bl = X.l; n.br = X.r; n.bt = X.t; n.bb = X.b; delete n.bw; delete n.bh; }, 160);
+}
+const VT_IC = (rot) => `<svg width="18" height="18" viewBox="0 0 18 18"><text x="9" y="9" text-anchor="middle" dominant-baseline="central" font-size="11" font-weight="600" font-family="Georgia, serif" fill="currentColor"${rot ? ' transform="rotate(-90 9 9)"' : ''}>Ab</text></svg>`;
+const BOX_VTS = [['', 'Label across', VT_IC(false)], ['1', 'Label up the box', VT_IC(true)]];
+const SZ_IC = { w: '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 7h11M4 4.5 1.5 7 4 9.5M10 4.5 12.5 7 10 9.5"/></svg>',
+  h: '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 1.5v11M4.5 4 7 1.5 9.5 4M4.5 10 7 12.5 9.5 10"/></svg>' };
+const bszHTML = (ax) => `<span class="bsz" title="${ax === 'w' ? 'Width' : 'Height'} in grid points">${SZ_IC[ax]}<button data-i="bstep" data-k="${ax}" data-d="-0.5">−</button><input data-i="bspan" data-k="${ax}" inputmode="decimal" spellcheck="false" autocomplete="off"><button data-i="bstep" data-k="${ax}" data-d="0.5">+</button></span>`;
+const BOX_LAYS = [['', 'Spread evenly', '<path d="M2 3h6M2 9h6M2 15h6"/>'], ['ends', 'Towards both ends', '<path d="M2 3h6M2 6.5h6M2 11.5h6M2 15h6"/>'], ['mid', 'Into the middle', '<path d="M1 3l7 6M1 9h7M1 15l7-6"/>']]
+  .map(([v, t, p]) => [v, t, `<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="8.5" y="1.5" width="8" height="15" rx="1.5"/>${p}</svg>`]);
+function buildBoxInsp() {
+  return `<div class="row"><label class="field"><input data-i="label" placeholder="$U$" spellcheck="false" autocomplete="off"></label>
+      <button class="ib danger" data-i="del" title="Delete (⌫)">${I.trash}</button></div>
+    <div class="row bxtop"><div class="chips">${BOX_LABELS.map((v) => `<button class="chip bxc" data-i="phase" data-v="${esc(v)}">${tex(ZX.labelMath(v))}</button>`).join('')}</div>
+      <div class="seg sm" data-seg="bvt">${BOX_VTS.map(([v, t, ic]) => `<button data-i="bvt" data-v="${v}" title="${t}">${ic}</button>`).join('')}</div></div>
+    <div class="row bszrow">${bszHTML('w')}${bszHTML('h')}</div>
+    <div class="row"><div class="seg" data-seg="blay">${BOX_LAYS.map(([v, t, ic]) => `<button data-i="blay" data-v="${v}" title="${t}">${ic}</button>`).join('')}</div><span class="vsep"></span>
+      <div class="wcols">${BOX_COLS.map((c) => `<button class="wc${c ? '' : ' none'}" data-i="bcol" data-v="${c}" style="--c:${c || '#e9ecf1'}" title="${c ? 'Fill' : 'Default'}"></button>`).join('')}</div></div>`;
+}
+function refreshBoxInsp(n) {
+  const inp = insp.querySelector('input[data-i="label"]');
+  if (inp && document.activeElement !== inp) inp.value = n.label || '';
+  insp.querySelectorAll('[data-i="phase"]').forEach((b) => b.classList.toggle('on', b.dataset.v === n.label));
+  insp.querySelectorAll('input[data-i="bspan"]').forEach((el) => { if (document.activeElement !== el) el.value = String(boxSpan(n, el.dataset.k)); });
+  insp.querySelectorAll('[data-i="bstep"]').forEach((b) => { b.disabled = +b.dataset.d < 0 && boxSpan(n, b.dataset.k) <= 1; });
+  insp.querySelectorAll('[data-i="blay"]').forEach((b) => b.classList.toggle('on', b.dataset.v === (n.lay || '')));
+  insp.querySelectorAll('[data-i="bvt"]').forEach((b) => b.classList.toggle('on', b.dataset.v === (n.vt ? '1' : '')));
+  insp.querySelectorAll('[data-i="bcol"]').forEach((b) => b.classList.toggle('on', b.dataset.v === (n.fill || '')));
   syncAllPills(insp);
 }
 // ---------- matrix arrows: panel, expand ⇄ fold, spotting Z–X blocks ----------
@@ -1565,6 +1806,7 @@ insp.addEventListener('input', (ev) => {
   const el = ev.target, { nodes, edges } = selected();
   if (!typingSnap) { snapshot(); typingSnap = true; }
   if (el.dataset.i === 'label' && nodes[0]) nodes[0].n.label = el.value;
+  if (el.dataset.i === 'bspan' && nodes[0]) { const v = parseFloat(el.value); if (v >= 1) return setBoxSpan(nodes[0].n, el.dataset.k, v); return; }
   if (nodes[0] && nodes[0].n.t === 'M') matInput(nodes[0].n, el);
   if (el.dataset.i === 'opts' && edges[0]) edges[0].e.o = el.value;
   save(); render();
@@ -1595,10 +1837,14 @@ insp.addEventListener('click', (ev) => {
   if (a[0] === 'm' && nodes[0] && nodes[0].n.t === 'M') return matClick(nodes[0].n, nodes[0].d, b);
   if (a === 'type') return mutate(() => nodes.forEach(({ n }) => setType(n, v)));
   if (a === 'phase') return mutate(() => { nodes[0].n.label = v; });
+  if (a === 'blay') return mutate(() => { nodes[0].n.lay = v; });
+  if (a === 'bvt') return mutate(() => { if (v) nodes[0].n.vt = 1; else delete nodes[0].n.vt; });
+  if (a === 'bstep') { const n = nodes[0].n; snapshot(); return setBoxSpan(n, b.dataset.k, boxSpan(n, b.dataset.k) + +b.dataset.d); }
+  if (a === 'bcol') return mutate(() => { nodes[0].n.fill = v; });
   if (a === 'loop') return mutate(() => { const { n, d } = nodes[0]; d.edges.push({ id: ZX.newId('e'), a: n.id, b: n.id, o: 'loop above' }); });
   if (a === 'curve') return mutate(() => setCurve(edges[0].e, v));
-  if (a === 'hbox') return mutate(() => toggleTok(edges[0].e, 'H'));
-  if (a === 'wcol' || a === 'wls') { const f = a === 'wcol' ? 'col' : 'ls'; return mutate(() => edges.forEach(({ e }) => { if (v) e[f] = v; else delete e[f]; })); }
+  if (a === 'hbox') return mutate(() => edges.forEach(({ e }) => toggleTok(e, 'H')));
+  if (a === 'wcol') { const f = 'col'; return mutate(() => edges.forEach(({ e }) => { if (v) e[f] = v; else delete e[f]; })); }
   if (a === 'rev') return mutate(() => {
     const e = edges[0].e; [e.a, e.b] = [e.b, e.a];
     e.o = ZX.splitOpts(e.o).map((t) => t.replace(/^bend\s+(left|right)/, (_, s) => 'bend ' + (s === 'left' ? 'right' : 'left'))).join(', ');
@@ -1619,12 +1865,16 @@ function positionPop() {
 }
 // Re-space diagrams after the relation between them changed size.
 function respace() { animate(tidy, 320); }
-function sepParts(s) {
-  const m = /^\\stackrel\{\\mathbf\{(.*)\}\}\{(.*)\}$/.exec(s.trim());
-  if (m) return { rule: m[1], rel: m[2] };
-  return { rule: '', rel: s.trim() };
+// rule, relation and the scalars written before / after it (pre multiplies the left diagram, post the right one)
+const sepParts = (s) => ZX.sepSplit(s);
+// a relation on the canvas: the scalars next to it (pre / post) smaller than the relation, as \zxScalar in LaTeX
+function sepHTML(s) {
+  const p = ZX.sepSplit(s);
+  if (!p.pre && !p.post) return tex(s);
+  const sc = (x) => (x ? `<span class="sc">${tex(x)}</span>` : '');
+  return sc(p.pre) + tex(ZX.sepJoin({ pre: '', rule: p.rule, rel: p.rel, post: '' })) + sc(p.post);
 }
-const sepBuild = (rule, rel) => (rule ? `\\stackrel{\\mathbf{${rule}}}{${rel || '='}}` : rel);
+const sepBuild = (rule, rel, p) => ZX.sepJoin({ pre: p ? p.pre : '', rule, rel, post: p ? p.post : '' });
 function openSep(i) {
   if (lockedStop()) return;
   const draw = () => {
@@ -1632,12 +1882,15 @@ function openSep(i) {
     return `<div class="row"><div class="seg" data-seg="rel">${RELS.map(([l, v]) => `<button data-s="rel" data-v="${esc(v)}" class="${rel === v ? 'on' : ''}">${l}</button>`).join('')}</div>
       <label class="field"><span>Rule</span><input data-s="rule" value="${esc(rule)}" placeholder="(sp)" spellcheck="false"></label></div>
       <div class="chips">${RULES.map((r) => `<button class="chip${rule.includes(r) ? ' on' : ''}" data-s="chip" data-v="${esc(r)}">${r.replace('\\pi', 'π')}</button>`).join('')}</div>
+      <div class="row"><label class="field"><span>Scalar</span><input data-s="scal" value="${esc(sepParts(sepOf(i)).post)}" placeholder="multiplies the right side, e.g. \\frac{1}{\\sqrt{2}}" spellcheck="false"></label></div>
+      <div class="sepfix" data-fix-i="${i}">${sepFixHTML(i)}</div>
       <div class="row"><label class="field"><span>LaTeX</span><input data-s="raw" value="${esc(sepOf(i))}" spellcheck="false"></label></div>
       ${brRow(i)}`;
   };
   openPop(draw(), () => (doc.diagrams[i + 1] ? sepPoint(i, doc.diagrams.map(frameRect), lineStarts()) : { x: 0, y: 0 }));
   pop.dataset.kind = 'sep'; pop.dataset.i = i;
-  pop._redraw = () => { const f = document.activeElement && document.activeElement.dataset.s; pop.innerHTML = draw(); syncAllPills(pop); if (f) { const el = pop.querySelector(`input[data-s="${f}"]`); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } } };
+  sepFixFetch(i);
+  pop._redraw = () => { sepFixFetch(i); const f = document.activeElement && document.activeElement.dataset.s; pop.innerHTML = draw(); syncAllPills(pop); if (f) { const el = pop.querySelector(`input[data-s="${f}"]`); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } } };
 }
 function brRow(i) {
   const d = doc.diagrams[i + 1];
@@ -1682,20 +1935,28 @@ pop.addEventListener('input', (ev) => {
   const el = ev.target, i = +pop.dataset.i;
   if (!popSnap) { snapshot(); popSnap = true; }
   if (el.dataset.s === 'raw') doc.seps[i] = el.value;
-  if (el.dataset.s === 'rule') doc.seps[i] = sepBuild(el.value.trim(), sepParts(sepOf(i)).rel);
+  if (el.dataset.s === 'rule') { const p = sepParts(sepOf(i)); doc.seps[i] = sepBuild(el.value.trim(), p.rel, p); }
+  if (el.dataset.s === 'scal') { const p = sepParts(sepOf(i)); doc.seps[i] = sepBuild(p.rule, p.rel, { pre: p.pre, post: el.value.trim() }); }
   if (el.dataset.s === 'fopts') doc.diagrams[i].opts = el.value.trim();
   save(); render();
-  if (pop.dataset.kind === 'sep') { const raw = pop.querySelector('[data-s="raw"]'); if (raw && el !== raw) raw.value = doc.seps[i]; }
+  if (pop.dataset.kind === 'sep') {
+    const raw = pop.querySelector('[data-s="raw"]'); if (raw && el !== raw) raw.value = doc.seps[i];
+    const sc = pop.querySelector('[data-s="scal"]'); if (sc && el !== sc) sc.value = sepParts(sepOf(i)).post;
+    const fx = pop.querySelector('.sepfix'); if (fx) fx.innerHTML = sepFixHTML(i);
+    clearTimeout(sepFixTimer); sepFixTimer = setTimeout(() => sepFixFetch(i), 250);
+  }
 });
+let sepFixTimer = 0;
 pop.addEventListener('click', (ev) => {
   const b = ev.target.closest('button[data-s]');
   if (!b) return;
   const i = +pop.dataset.i, v = b.dataset.v;
-  if (b.dataset.s === 'rel') { mutate(() => { doc.seps[i] = v ? sepBuild(sepParts(sepOf(i)).rule, v) : ''; }); respace(); }
+  if (b.dataset.s === 'rel') { mutate(() => { const p = sepParts(sepOf(i)); doc.seps[i] = v ? sepBuild(p.rule, v, p) : ''; }); respace(); }
+  if (b.dataset.s === 'fix') { mutate(() => { const p = sepParts(sepOf(i)); doc.seps[i] = sepBuild(p.rule, p.rel === '\\propto' ? '=' : p.rel || '=', { pre: p.pre, post: v === '1' ? '' : v }); }); respace(); pop._redraw(); return; }
   if (b.dataset.s === 'chip') mutate(() => {
     const p = sepParts(sepOf(i));
     const rule = p.rule.includes(v) ? p.rule.replace(v, '') : p.rule + v;
-    doc.seps[i] = sepBuild(rule, p.rel);
+    doc.seps[i] = sepBuild(rule, p.rel, p);
   });
   if (b.dataset.s === 'chip') respace();
   if (b.dataset.s === 'fchip') { mutate(() => { doc.diagrams[i].opts = v; }); return closePop(); }
@@ -1740,8 +2001,22 @@ vp.addEventListener('contextmenu', (e) => {
   if (!sel.has(id)) sel = new Set([id]);
   openInsp(false);
 });
+// A press on the canvas while a floating panel is open only closes that panel: with a placing tool (Z, X, H …)
+// or the wire tool it must not also drop a node or start a wire there. Read in the capture phase, before the
+// panels' own outside-click handlers close them.
+let pressCloses = false;
+window.addEventListener('pointerdown', (e) => {
+  pressCloses = e.button === 0 && vp.contains(e.target) && !e.target.closest('[data-sep]')
+    && (!pop.hidden || (!insp.hidden && !insp.classList.contains('closing')) || !menu.hidden || !!ctxEl || !!wireEl || !!pickEl);
+}, true);
 vp.addEventListener('pointerdown', (e) => {
   if (e.target.closest('[data-act],[data-add],[data-ins],.fl[data-stat]')) return;
+  if (pressCloses && tool !== 'select' && tool !== 'hand' && !e.target.closest('.bxh,[data-bres],[data-pend],[data-bend]')) {
+    pressCloses = false;
+    closePop(); hideInsp(); inspOpen = false;
+    if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+    e.preventDefault(); return;
+  }
   const sepEl = e.target.closest('[data-sep]');
   if (sepEl && tool !== 'hand' && !isLocked()) { e.preventDefault(); return openSep(+sepEl.dataset.sep); }
   if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
@@ -1760,6 +2035,16 @@ vp.addEventListener('pointerdown', (e) => {
   if (pointers.size === 2) { startPinch(); return; }
   if (pointers.size > 2) return;
   const p = toWorld(e.clientX, e.clientY);
+  const pendEl = e.target.closest('[data-pend]');
+  if (pendEl && !isLocked()) {
+    const [eid, end] = pendEl.dataset.pend.split(':'), f = findEdge(eid);
+    if (f) { drag = { type: 'pend', d: f.d, e: f.e, end, box: f.d.nodes.find((n) => n.id === f.e[end]), snap: false, tgt: null, tp: null }; e.preventDefault(); render(); return; }
+  }
+  const bresEl = e.target.closest('[data-bres]');
+  if (bresEl && !isLocked()) {
+    const f = findNode(bresEl.closest('[data-node]').dataset.node);
+    if (f) { drag = { type: 'bres', d: f.d, n: f.n, side: bresEl.dataset.bres, snap: false }; e.preventDefault(); return; }
+  }
   const bendEl = e.target.closest('[data-bend]');
   if (bendEl && tool === 'select' && !isLocked()) {
     const f = findEdge(bendEl.dataset.bend);
@@ -1794,8 +2079,8 @@ vp.addEventListener('pointerdown', (e) => {
     const { n, d } = f;
     activeDi = doc.diagrams.indexOf(d);
     if (tool === 'edge') {
-      const sp = n.t === 'M' ? pickPort(d, n, p) : null;
-      drag = { type: 'edge', d, from: n, p0: sp || pos(d, n), startPort: sp, tp: null, tgt: {}, chain: [n], lp: p, mod: e.metaKey || e.ctrlKey, shift: e.shiftKey, viaS: holdS };
+      const sp = n.t === 'M' ? pickPort(d, n, p) : n.t === 'B' ? boxPin(d, n, p) : null;
+      drag = { type: 'edge', d, from: n, p0: sp || pos(d, n), startPort: sp, tp: null, tgt: {}, chain: [n], lp: p, mod: e.metaKey || e.ctrlKey, shift: e.shiftKey, viaS: holdS || holdP === 'select' };
       return;
     }
     if (tool === 'select' && (e.ctrlKey || e.metaKey || e.altKey)) {
@@ -1807,7 +2092,7 @@ vp.addEventListener('pointerdown', (e) => {
       return;
     }
     // Node tools act like Select on an existing node: select it, never retype it.
-    const again = (tool === 'select' || ['Z', 'X', 'H', 'N', 'T', 'P', 'M'].includes(tool)) && sel.size === 1 && sel.has(n.id) && !inspOpen && !e.shiftKey;
+    const again = (tool === 'select' || ['Z', 'X', 'H', 'N', 'T', 'P', 'M', 'B'].includes(tool)) && sel.size === 1 && sel.has(n.id) && !inspOpen && !e.shiftKey;
     if (e.shiftKey) { sel.has(n.id) ? sel.delete(n.id) : sel.add(n.id); inspOpen = false; render(); return; }
     if (!sel.has(n.id)) { sel = new Set([n.id]); inspOpen = false; }
     const ids = [...sel].filter((id) => id[0] === 'n' && d.nodes.some((m) => m.id === id));
@@ -1820,7 +2105,7 @@ vp.addEventListener('pointerdown', (e) => {
     const f = findEdge(edgeEl.dataset.edge);
     if (!f) return;
     activeDi = doc.diagrams.indexOf(f.d);
-    if (['Z', 'X', 'H', 'N', 'P'].includes(tool)) return splitEdge(f.d, f.e, p, tool);
+    if (['Z', 'X', 'H', 'N', 'P', 'B'].includes(tool)) return splitEdge(f.d, f.e, p, tool);
     if (!e.shiftKey && !e.metaKey && !e.ctrlKey && sel.size === 1 && sel.has(f.e.id) && !inspOpen) return openInsp(false);
     if (e.shiftKey || e.metaKey || e.ctrlKey) { sel.has(f.e.id) ? sel.delete(f.e.id) : sel.add(f.e.id); inspOpen = false; }
     else if (!sel.has(f.e.id) || sel.size > 1) { sel = new Set([f.e.id]); inspOpen = false; }
@@ -1830,11 +2115,11 @@ vp.addEventListener('pointerdown', (e) => {
   }
   // empty canvas
   lastTap = null;
-  if (['Z', 'X', 'H', 'N', 'T', 'P', 'M'].includes(tool)) return placeNode(p, tool);
+  if (['Z', 'X', 'H', 'N', 'T', 'P', 'M', 'B'].includes(tool)) return placeNode(p, tool);
   if (tool === 'edge') {
     const had = doc.diagrams.length;
     const d = pickDiagram(p), c = cellOf(d, p);
-    drag = { type: 'edge', d, from: at(d, c.r, c.c) || null, fromCell: c, p0: { x: d.ox + c.c * CW, y: d.oy + c.r * CH }, tp: null, tgt: {}, newDiagram: !had, chain: [], lp: p, mod: e.metaKey || e.ctrlKey, shift: e.shiftKey, viaS: holdS };
+    drag = { type: 'edge', d, from: at(d, c.r, c.c) || null, fromCell: c, p0: { x: d.ox + c.c * CW, y: d.oy + c.r * CH }, tp: null, tgt: {}, newDiagram: !had, chain: [], lp: p, mod: e.metaKey || e.ctrlKey, shift: e.shiftKey, viaS: holdS || holdP === 'select' };
     return;
   }
   drag = { type: 'marq', p0: p, sx: e.clientX, sy: e.clientY, base: e.shiftKey ? new Set(sel) : new Set(), moved: false };
@@ -1878,6 +2163,33 @@ vp.addEventListener('pointermove', (e) => {
     } else if (fanTp) { fanTp = null; render(); }
     return;
   }
+  if (drag.type === 'pend') {
+    const D = drag, k = 'p' + D.end;
+    const ne = document.elementsFromPoint(e.clientX, e.clientY).map((x) => x.closest && x.closest('[data-node]')).find(Boolean);
+    const f = ne && findNode(ne.dataset.node);
+    let node = f && f.d === D.d ? f.n : null;
+    if (!node) { const mg = magnetAt(D.d, p, new Set([D.e[D.end === 'a' ? 'b' : 'a']])); if (mg) node = mg.node; }
+    if (node === D.box) {   // along its own box: a new place (and order) on any side
+      const q = boxPin(D.d, node, p);
+      D.tgt = { node }; D.tp = null;
+      if (!D.e[k] || D.e[k].s !== q.s || Math.abs(D.e[k].t - q.t) > 0.04) { if (!D.snap) { snapshot(); D.snap = true; } D.e[k] = { s: q.s, t: q.t }; }
+    } else if (node && node.t !== 'T') { D.tgt = { node }; D.tp = node.t === 'B' ? boxPin(D.d, node, p) : pos(D.d, node); }
+    else { const c = cellOf(D.d, p); D.tgt = { cell: c }; D.tp = { x: D.d.ox + c.c * CW, y: D.d.oy + c.r * CH }; }
+    return render();
+  }
+  if (drag.type === 'bres') {
+    // symmetric about the box's cell: the box spans bw × bh cells
+    // only the dragged edge moves; the box always keeps its own cell
+    const n = drag.n, c = pos(drag.d, n), sd = drag.side;
+    const far = sd === 'r' ? (p.x - c.x) / CW : sd === 'l' ? (c.x - p.x) / CW : sd === 'b' ? (p.y - c.y) / CH : (c.y - p.y) / CH;
+    const v = Math.max(0, Math.min(40, snapTo(far - ZX.BOX_PAD / 2))), k = { l: 'bl', r: 'br', t: 'bt', b: 'bb' }[sd];
+    if (ZX.boxExt(n)[sd] !== v) {
+      if (!drag.snap) { snapshot(); drag.snap = true; }
+      const X = ZX.boxExt(n);
+      animate(() => { n.bl = X.l; n.br = X.r; n.bt = X.t; n.bb = X.b; delete n.bw; delete n.bh; n[k] = v; }, 110);
+    }
+    return;
+  }
   if (drag.type === 'bend') {
     const r = bendFromPoint(drag, p);
     drag.deg = r.deg;
@@ -1911,6 +2223,13 @@ vp.addEventListener('pointermove', (e) => {
     return render();
   }
   if (drag.type === 'move') {
+    if (drag.ids.length === 1) {   // a loose wire end snaps onto a box or node it comes close to
+      const n = drag.d.nodes.find((x) => x.id === drag.ids[0]), le = looseEnd(drag.d, n);
+      const mg = le && Math.hypot(p.x - drag.p0.x, p.y - drag.p0.y) > 3 ? magnetAt(drag.d, p, new Set([n.id, le.a === n.id ? le.b : le.a])) : null;
+      const key = mg ? mg.node.id + (mg.pin ? mg.pin.s + mg.pin.t : '') : '';
+      if (key !== (drag.magKey || '')) { drag.mag = mg; drag.magKey = key; if (mg) drag.dropId = null; render(); }
+      if (mg) return;
+    }
     const dt = dropTarget(drag, p), did = dt ? dt.id : null;
     if (did !== drag.dropId && Math.hypot(p.x - drag.p0.x, p.y - drag.p0.y) > 10) { drag.dropId = did; render(); }
     const dc = snapTo((p.x - drag.p0.x) / CW), dr = snapTo((p.y - drag.p0.y) / CH);
@@ -1929,15 +2248,39 @@ vp.addEventListener('pointermove', (e) => {
     const ne = el && el.closest && el.closest('[data-node]');
     let node = null;
     if (ne) { const f = findNode(ne.dataset.node); if (f && f.d === drag.d) node = f.n; }
+    if (!node) { const mg = magnetAt(drag.d, p, drag.from ? new Set([drag.from.id]) : null); if (mg) node = mg.node; }
     // nodes the stroke passes through (checked along the segment, so fast drags don't skip any)
     const a = drag.lp, vx = p.x - a.x, vy = p.y - a.y, L2 = vx * vx + vy * vy || 1;
-    drag.d.nodes.map((m) => { const q = pos(drag.d, m), t = Math.max(0, Math.min(1, ((q.x - a.x) * vx + (q.y - a.y) * vy) / L2)); return { m, t, dist: Math.hypot(a.x + vx * t - q.x, a.y + vy * t - q.y) }; })
+    // a box counts when the stroke crosses its rectangle; where it goes in / comes out becomes the wires' pins
+    const boxHit = (m) => {
+      const c = pos(drag.d, m), g = ZX.boxGeom(drag.d, m), x0 = c.x + (g.cx - g.W / 2) * CW, x1 = c.x + (g.cx + g.W / 2) * CW, y0 = c.y + (g.cy - g.H / 2) * CH, y1 = c.y + (g.cy + g.H / 2) * CH;
+      let t0 = 0, t1 = 1;
+      for (const [pp, qq] of [[-vx, a.x - x0], [vx, x1 - a.x], [-vy, a.y - y0], [vy, y1 - a.y]]) {
+        if (pp === 0) { if (qq < 0) return null; continue; }
+        const r = qq / pp;
+        if (pp < 0) { if (r > t1) return null; t0 = Math.max(t0, r); } else { if (r < t0) return null; t1 = Math.min(t1, r); }
+      }
+      return { t0, t1 };
+    };
+    drag.boxPins = drag.boxPins || {};
+    drag.d.nodes.map((m) => {
+      if (m.t === 'B') {
+        if (m === drag.from) return { m, dist: Infinity };
+        const h = boxHit(m);
+        if (!h) return { m, dist: Infinity };
+        const at = (t) => boxPin(drag.d, m, { x: a.x + vx * t, y: a.y + vy * t }), bp = drag.boxPins[m.id] || (drag.boxPins[m.id] = {});
+        if (!bp.in) bp.in = at(h.t0);
+        if (h.t1 < 1) bp.out = at(h.t1);   // left the box on this segment
+        return { m, t: h.t0, dist: 0 };
+      }
+      const q = pos(drag.d, m), t = Math.max(0, Math.min(1, ((q.x - a.x) * vx + (q.y - a.y) * vy) / L2)); return { m, t, dist: Math.hypot(a.x + vx * t - q.x, a.y + vy * t - q.y) };
+    })
       .filter((h) => h.dist < 13 && !drag.chain.includes(h.m)).sort((x, y) => x.t - y.t).forEach((h) => drag.chain.push(h.m));
     drag.lp = p;
     const cell = node ? { r: node.r, c: node.c } : cellOf(drag.d, p);
     drag.tgt = node ? { node } : { cell };
     drag.tp = { x: drag.d.ox + cell.c * CW, y: drag.d.oy + cell.r * CH };
-    drag.port = node && node.t === 'M' && node !== drag.from ? pickPort(drag.d, node, p) : null;
+    drag.port = node && node.t === 'M' && node !== drag.from ? pickPort(drag.d, node, p) : node && node.t === 'B' && node !== drag.from ? boxPin(drag.d, node, p) : null;
     if (drag.port) drag.tp = { x: drag.port.x, y: drag.port.y };
     mWatch(drag.d, p, drag.port);
     return render();
@@ -1952,16 +2295,17 @@ vp.addEventListener('pointermove', (e) => {
     const s = new Set(drag.base), inside = new Set();
     doc.diagrams.forEach((d) => {
       d.nodes.forEach((n) => { const q = pos(d, n); if (q.x >= wx0 && q.x <= wx1 && q.y >= wy0 && q.y <= wy1) { inside.add(n.id); if (selPick[pickKind(n.t)] !== false && !(drag.right && n.t === 'T')) s.add(n.id); } });   // right-drag picks wire sources: never text cells
-      if (selPick.wire !== false) d.edges.forEach((ed) => { if (inside.has(ed.a) && inside.has(ed.b)) s.add(ed.id); });
+      d.edges.forEach((ed) => { if (edgePicked(ed) && inside.has(ed.a) && inside.has(ed.b)) s.add(ed.id); });
     });
     // a wire is picked as soon as any part of it lies in the box (points sampled once per drag from the drawn paths)
-    if (selPick.wire !== false) {
+    if (selPick.wire !== false || selPick.hw !== false) {
       if (!drag.wpts) {
         drag.wpts = [];
         world.querySelectorAll('.edges .edge[data-edge] > .wire-p').forEach((el) => {
           const L = el.getTotalLength(), k = Math.max(2, Math.ceil(L / 5)), pts = [];
           for (let i = 0; i <= k; i++) { const q = el.getPointAtLength(L * i / k); pts.push(q.x, q.y); }
-          drag.wpts.push([el.parentNode.dataset.edge, pts]);
+          const f = findEdge(el.parentNode.dataset.edge);
+          if (f && edgePicked(f.e)) drag.wpts.push([el.parentNode.dataset.edge, pts]);
         });
       }
       drag.wpts.forEach(([id, pts]) => {
@@ -1985,12 +2329,39 @@ function endPointer(e) {
   if (!spaceDown) vp.classList.remove('panning');
   marq.style.display = 'none';
   if (D.type === 'pan') { if (D.touch && !D.moved && sel.size) { sel.clear(); render(); } return; }
-  if (D.type === 'edge') { finishEdge(D); if (!holdS && tool === 'edge' && D.viaS) setTool('select'); return; }
+  if (D.type === 'bres') { if (D.snap) save(); return render(); }
+  if (D.type === 'pend') {
+    const k = 'p' + D.end, other = D.e[D.end === 'a' ? 'b' : 'a'], t = D.tgt;
+    if (!t || t.node === D.box) { if (D.snap) commit(); return render(); }
+    let n = t.node || at(D.d, t.cell.r, t.cell.c);
+    if (n && (n.id === other || n.t === 'T')) { if (D.snap) commit(); return render(); }
+    if (!D.snap) snapshot();
+    if (!n) { n = makeNode('N', t.cell.r, t.cell.c); D.d.nodes.push(n); }   // dropped on an empty spot: a loose end there
+    D.e[D.end] = n.id; delete D.e[k];
+    if (n.t === 'B') { const q = boxPin(D.d, n, toWorld(e.clientX, e.clientY)); D.e[k] = { s: q.s, t: q.t }; }
+    mergeMidPoints(D.d);
+    sel = new Set(D.d.edges.includes(D.e) ? [D.e.id] : []);
+    return commit();
+  }
+  if (D.type === 'edge') { finishEdge(D); if (!holdS && !holdP && tool === 'edge' && D.viaS) setTool('select'); return; }
   if (D.type === 'marq' && D.right && !D.moved) {
     if (D.ctx && findNode(D.ctx) || D.ctx && findEdge(D.ctx)) { if (!sel.has(D.ctx)) sel = new Set([D.ctx]); return openInsp(false); }
     return render();
   }
   if (D.type === 'ghost') { vp.classList.remove('copying'); return D.moved && D.cell ? finishGhost(D, toWorld(e.clientX, e.clientY)) : render(); }
+  if (D.type === 'move' && D.mag) {   // loose end dropped by a box / node: the wire now ends there
+    const d = D.d, n = d.nodes.find((x) => x.id === D.ids[0]), le = looseEnd(d, n);
+    if (n && le) {
+      if (!D.snap) snapshot();
+      const end = le.a === n.id ? 'a' : 'b';
+      le[end] = D.mag.node.id; delete le['p' + end];
+      if (D.mag.pin) le['p' + end] = { s: D.mag.pin.s, t: D.mag.pin.t };
+      d.nodes = d.nodes.filter((x) => x !== n);
+      mergeMidPoints(d);
+      sel = new Set(d.edges.includes(le) ? [le.id] : []);
+      return commit();
+    }
+  }
   if (D.type === 'move' && D.dropId) {
     const d = D.d, n = d.nodes.find((x) => x.id === D.ids[0]), ed = d.edges.find((x) => x.id === D.dropId);
     if (n && ed) {
@@ -2077,12 +2448,14 @@ function finishEdge(D) {
       return render();
     }
     const others = D.from ? srcs.filter((n) => n !== D.from) : srcs;
+    if (fanPar && srcs.length >= fanMin()) { wirePend = null; return parTo(d, srcs, D.from || D.fromCell, D.shift || holdS || holdP); }
     if (srcs.length >= fanMin() && others.length) {   // several sources: wire them all to the clicked node or cell (a selected target just wires the others)
       wirePend = null;
       return fanTo(d, srcs, D.from || D.fromCell, D.shift || holdS);
     }
     if (D.from) {
       if (P && P.n !== D.from) { wirePend = null; return linkChain(d, [P.n, D.from], { start: P.port, end: D.startPort }); }
+      if (P && P.n === D.from && D.from.t !== 'M' && D.from.t !== 'T') { wirePend = null; return addLoop(d, D.from); }   // same node twice: a self-loop
       wirePend = P && P.n === D.from ? null : { d, n: D.from, tp: null, port: D.startPort };
       if (wirePend) toast('Click another node or cell to connect');
       return render();
@@ -2097,7 +2470,23 @@ function finishEdge(D) {
   D.chain.forEach((n) => { if (n !== seq[0]) seq.push(n); });
   const B = t.node || at(d, to.r, to.c) || to;
   if (seq[seq.length - 1] !== B) seq.push(B);
-  linkChain(d, seq, { start: D.startPort, end: t.node && t.node.t === 'M' ? D.port : null });
+  linkChain(d, seq, { start: D.startPort, end: t.node && (t.node.t === 'M' || t.node.t === 'B') ? D.port : null, mid: D.boxPins });
+}
+// Self-loop on n (wire tool: click the same node twice), on the freest side: no loop there yet, no wire leaving that way.
+function addLoop(d, n) {
+  const sides = [['above', 0, -1], ['below', 0, 1], ['right', 1, 0], ['left', -1, 0]];
+  const score = ([s, dx, dy]) => {
+    let v = 0;
+    d.edges.forEach((e) => {
+      if (e.a === n.id && e.b === n.id) { if (ZX.splitOpts(e.o).includes('loop ' + s)) v += 10; return; }
+      const o = e.a === n.id ? e.b : e.b === n.id ? e.a : null, m = o && d.nodes.find((x) => x.id === o);
+      if (m) { const vx = m.c - n.c, vy = m.r - n.r, L = Math.hypot(vx, vy) || 1; if ((vx * dx + vy * dy) / L > 0.5) v += 3; }
+    });
+    return v;
+  };
+  const side = sides.reduce((b, x) => (score(x) < score(b) ? x : b))[0];
+  mutate(() => { d.edges.push({ id: ZX.newId('e'), a: n.id, b: n.id, o: ['loop ' + side].concat(wireMode ? [wireMode] : []).join(', ') }); });
+  toast(`Self-loop (${side})`);
 }
 // wire consecutive items of seq (nodes, or {r,c} cells that become wire points).
 // Every wire asked for is added, even next to an existing one (parallel wires matter in ZX, e.g. Hopf).
@@ -2110,7 +2499,7 @@ function fanTo(d, srcs, target, keep) {
     if (!t) { t = makeNode('N', target.r, target.c); d.nodes.push(t); }
     srcs.forEach((s) => {
       if (s === t) return;
-      d.edges.push({ id: ZX.newId('e'), a: s.id, b: t.id, o: '' }); made++;
+      d.edges.push({ id: ZX.newId('e'), a: s.id, b: t.id, o: wireMode }); made++;
     });
     if (!keep) sel.clear();
   });
@@ -2118,14 +2507,81 @@ function fanTo(d, srcs, target, keep) {
   toast(made ? `Connected ${made} wire${made === 1 ? '' : 's'}${keep ? (holdS ? ' — click another target, or let go of S' : ' — Shift-click another target, or Esc') : ''}` : 'Nothing to connect');
 }
 let fanTp = null;   // pointer cell while several sources wait for a target (ghost lines)
+// Parallel mode (P with several nodes selected): every source gets a wire in the same direction and length.
+// The source nearest the clicked spot goes there; the others go to the same offset from themselves.
+let fanPar = false;
+function parTargets(srcs, tgt) {
+  const a = srcs.reduce((b, n) => (Math.hypot(n.r - tgt.r, n.c - tgt.c) < Math.hypot(b.r - tgt.r, b.c - tgt.c) ? n : b));
+  const dr = tgt.r - a.r, dc = tgt.c - a.c;
+  return srcs.map((s) => ({ s, r: s.r + dr, c: s.c + dc }));
+}
+function parTo(d, srcs, target, keep) {
+  let made = 0;
+  mutate(() => {
+    parTargets(srcs, { r: target.r, c: target.c }).forEach(({ s, r, c }) => {
+      if (s.r === r && s.c === c) return;
+      let t = at(d, r, c);
+      if (!t) { t = makeNode('N', r, c); d.nodes.push(t); }
+      if (t.t === 'T') return;
+      d.edges.push({ id: ZX.newId('e'), a: s.id, b: t.id, o: wireMode }); made++;
+    });
+    if (!keep) { sel.clear(); fanPar = false; }
+  });
+  fanTp = null;
+  toast(made ? `Connected ${made} parallel wire${made === 1 ? '' : 's'}` : 'Nothing to connect');
+}
+// P with several nodes selected (Select or Wire tool): parallel wiring on / off. Returns false otherwise (P = preview).
+function parKey() {
+  if (!['select', 'edge'].includes(tool) || isLocked()) return false;
+  const fd = doc.diagrams.find((d) => d.nodes.some((n) => sel.has(n.id)));
+  if (!fd || fanSources(fd).length < 2) return false;
+  if (tool !== 'edge') setTool('edge');
+  fanPar = !fanPar;
+  toast(fanPar ? 'Parallel wires — click where the nearest one should go (P: all to one)' : 'All to one — click a target (P: parallel)');
+  render();
+  return true;
+}
 // Holding S in the Select tool with nodes selected: the wire tool until S is let go, and one source is enough.
-const fanMin = () => (holdS ? 1 : 2);
+const fanMin = () => (holdS || holdP ? 1 : 2);
+// Holding P in the Select tool with nodes selected: parallel wiring until P is let go.
+function releaseP() {
+  if (!holdP) return;
+  const from = holdP;
+  holdP = false; fanPar = false; fanTp = null;
+  if (drag && drag.type === 'edge') return;
+  if (tool === 'edge' && from === 'select') setTool('select');   // started in the wire tool: stay there
+  render();
+}
 function releaseS() {
   if (!holdS) return;
   holdS = false; fanTp = null;
   if (drag && drag.type === 'edge') return;   // finish the wire first (endPointer calls this again)
   if (tool === 'edge') setTool('select');
   render();
+}
+// An empty wire point (plain N) with one wire on each side is not an input/output: join its two wires into one.
+function mergeMidPoints(d) {
+  for (let again = true; again;) {
+    again = false;
+    for (const n of d.nodes) {
+      if (n.t !== 'N' || n.label || n.cmd) continue;
+      const inc = d.edges.filter((e) => e.a === n.id || e.b === n.id);
+      if (inc.length !== 2 || inc.some((e) => e.a === e.b)) continue;
+      const [e1, e2] = inc, o2 = e2.a === n.id ? e2.b : e2.a, o1 = e1.a === n.id ? e1.b : e1.a;
+      if (o1 === o2) continue;
+      const pin2 = e2.a === o2 ? e2.pa : e2.pb, k1 = e1.a === n.id ? 'pa' : 'pb';
+      if (e1.a === n.id) e1.a = o2; else e1.b = o2;
+      if (pin2) e1[k1] = pin2; else delete e1[k1];
+      const h = inc.filter((e) => ZX.splitOpts(e.o).includes('H')).length % 2;
+      e1.o = h ? 'H' : '';
+      if (!e1.col && e2.col) e1.col = e2.col;
+      const m = d.nodes.find((x) => x.id === o2);   // a matrix-arrow port that held the dropped wire keeps the joined one
+      if (m && m.t === 'M') ['pin', 'pout'].forEach((k) => { if (m[k]) m[k] = m[k].map((x) => (x === e2.id ? e1.id : x)); });
+      d.edges = d.edges.filter((e) => e !== e2);
+      d.nodes = d.nodes.filter((x) => x !== n);
+      again = true; break;
+    }
+  }
 }
 function linkChain(d, seq, ports) {
   ports = ports || {};
@@ -2141,11 +2597,19 @@ function linkChain(d, seq, ports) {
       if (A === B) continue;
       if (A.t === 'M' && B.t === 'M') { bundleArrows(d, A, B); continue; }
       const eid = ZX.newId('e');
-      d.edges.push({ id: eid, a: A.id, b: B.id, o: '' });
+      d.edges.push({ id: eid, a: A.id, b: B.id, o: wireMode });
       // a wire dropped on (or started from) a port of a matrix arrow keeps that port
       if (i === 0 && A.t === 'M' && ports.start && ports.start.id === A.id) ZX.setPort(A, ports.start.side, ports.start.j, eid);
+      const ne = d.edges[d.edges.length - 1];   // a box keeps the side (and order) the wire was drawn at
+      if (i === 0 && A.t === 'B' && ports.start && ports.start.box && ports.start.id === A.id) ne.pa = { s: ports.start.s, t: ports.start.t };
+      if (i === ns.length - 2 && B.t === 'B' && ports.end && ports.end.box && ports.end.id === B.id) ne.pb = { s: ports.end.s, t: ports.end.t };
       if (i === ns.length - 2 && B.t === 'M' && ports.end && ports.end.id === B.id) ZX.setPort(B, ports.end.side, ports.end.j, eid);
+      // boxes the stroke passed through: in where it entered, out where it left
+      const mp = ports.mid || {};
+      if (B.t === 'B' && !ne.pb && mp[B.id] && mp[B.id].in) ne.pb = { s: mp[B.id].in.s, t: mp[B.id].in.t };
+      if (A.t === 'B' && !ne.pa && mp[A.id] && (mp[A.id].out || mp[A.id].in)) { const q = mp[A.id].out || mp[A.id].in; ne.pa = { s: q.s, t: q.t }; }
     }
+    mergeMidPoints(d);
     sel.clear();
   });
   mNear = mHot = null;
@@ -2230,6 +2694,12 @@ window.addEventListener('keydown', (e) => {
   if (e.altKey && e.code === 'KeyN') { e.preventDefault(); return addTab(); }
   if (e.shiftKey && k.length === 1 && runKey('shift+' + k)) { e.preventDefault(); return; }
   if (e.shiftKey && k === 'p') { e.preventDefault(); return startShow(); }
+  if (k === 'p' && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey && (holdP || ((tool === 'select' || tool === 'edge') && !isLocked() && [...sel].some((id) => { const f = id[0] === 'n' && findNode(id); return f && f.n.t !== 'T'; })))) {
+    // P held with nodes selected: parallel wires (same direction and length) to wherever you click, until P is let go
+    e.preventDefault();
+    if (!holdP) { holdP = tool === 'edge' ? 'edge' : 'select'; wirePend = null; setTool('edge'); fanPar = true; toast('Parallel wires — click where the nearest one should go'); render(); }
+    return;
+  }
   if (k === 's' && !e.shiftKey && !e.altKey && (holdS || (tool === 'select' && !isLocked() && [...sel].some((id) => { const f = id[0] === 'n' && findNode(id); return f && f.n.t !== 'T'; })))) {
     // S held with nodes selected: wire them to whatever you click, until S is let go
     e.preventDefault();
@@ -2239,9 +2709,9 @@ window.addEventListener('keydown', (e) => {
   if (e.shiftKey && k === keys.curve) { e.preventDefault(); return toggleCurve(true); }
   if (runKey(k)) e.preventDefault();
 });
-window.addEventListener('keyup', (e) => { if (e.key === ' ') { spaceDown = false; if (!drag) vp.classList.remove('panning'); } if (e.key.toLowerCase() === 's') releaseS(); });
+window.addEventListener('keyup', (e) => { if (e.key === ' ') { spaceDown = false; if (!drag) vp.classList.remove('panning'); } if (e.key.toLowerCase() === 's') releaseS(); if (e.key.toLowerCase() === 'p') releaseP(); });
 window.addEventListener('pagehide', save);
-window.addEventListener('blur', () => { spaceDown = false; vp.classList.remove('panning'); releaseS(); });
+window.addEventListener('blur', () => { spaceDown = false; vp.classList.remove('panning'); releaseS(); releaseP(); });
 window.addEventListener('resize', () => { applyCam(); syncPill($('#dock')); });
 
 function togglePreview() {
@@ -2332,6 +2802,7 @@ try { const v = localStorage.getItem('zx-draw-perline'); if (v != null) perLine 
 let expTab = 'tex', imgState = { scope: 'one', fmt: 'png', scale: 3, white: true };
 try { Object.assign(imgState, JSON.parse(localStorage.getItem('zx-draw-img') || '{}')); } catch (_) {}
 function openExport(tab) {
+  expLook = Object.assign({}, LOOK_DEF);   // switches start at the defaults on every open
   expTab = ['img', 'tikz', 'pyzx'].includes(tab) ? tab : 'tex';   // opens on LaTeX unless asked for another tab
   openModal('Export', `<div class="exphead"><div id="expOpts"></div></div><div id="expBody" class="hbody"></div>`);
   $('#modal .sheet').classList.add('wide');
@@ -2370,6 +2841,31 @@ function keepMotion(root) {
   void root.offsetWidth;
   flips.forEach((f) => f());
 }
+// ---------- export looks: a row of switches at the bottom of the LaTeX / Image / TikZ tabs ----------
+const LOOKS = [
+  ['col', 'Wire colours', '<svg width="18" height="14" viewBox="0 0 18 14"><path d="M2 3.5H16" stroke="#f07c7c"/><path d="M2 7H16" stroke="#6cb2f0"/><path d="M2 10.5H16" stroke="#7cc68d"/></svg>', 'Coloured wires keep their colour'],
+  ['dots', 'Dots', '<svg width="18" height="14" viewBox="0 0 18 14"><path d="M1 7H17" stroke="currentColor" stroke-width="1.3"/><circle cx="9" cy="7" r="2.6" fill="currentColor"/></svg>', 'Draw Dots (routing points) as small black dots'],
+  ['clr', 'Colour', '<svg width="18" height="14" viewBox="0 0 18 14"><path d="M1 7H17" stroke="currentColor" stroke-width="1.2"/><circle cx="5" cy="7" r="3.4" fill="#d8f8d8" stroke="currentColor" stroke-width="1"/><circle cx="13" cy="7" r="3.4" fill="#e8a5a5" stroke="currentColor" stroke-width="1"/></svg>', 'Coloured spiders; off = black and white (Z white, X black, H white)'],
+  ['io', 'In / out ends', '<svg width="18" height="14" viewBox="0 0 18 14"><path d="M3 7H15" stroke="currentColor" stroke-width="1.3"/><circle cx="3" cy="7" r="2.4" fill="#5b5bd6"/><circle cx="15" cy="7" r="2.4" fill="#d9822b"/></svg>', 'Mark open wire ends: inputs indigo, outputs amber'],
+];
+const texLook = (d) => {
+  const io = expLook.io ? new Map([...ioMap(d)].map(([id, v]) => [id, v.startsWith('in') ? 'in' : 'out'])) : null;
+  return { col: expLook.col, dots: expLook.dots, io, bw: !expLook.clr };
+};
+function lookRow() {
+  return `<div class="looks"><span class="lk-lab">Include</span>${LOOKS.map(([k, l, ic, t]) => `<button class="lk${expLook[k] ? ' on' : ''}" data-lk="${k}" aria-pressed="${!!expLook[k]}" title="${t}"><span class="lk-ic">${ic}</span><span>${l}</span><span class="lk-tick"></span></button>`).join('')}</div>`;
+}
+function bindLooks(root, redo) {
+  const row = root.querySelector('.looks');
+  if (!row) return;
+  row.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-lk]'); if (!b) return;
+    const k = b.dataset.lk;
+    expLook[k] = !expLook[k];
+    b.classList.toggle('on', expLook[k]); b.setAttribute('aria-pressed', expLook[k]);
+    setTimeout(redo, 160);   // let the switch move first
+  });
+}
 // Move a panel's option row up next to the LaTeX / Image tabs; switching tabs cross-fades the rows.
 function liftOpts(root) {
   const host = $('#expOpts');
@@ -2397,6 +2893,7 @@ function exportTex(root) {
       ${doc.diagrams.length > 1 ? `<span class="grow"></span><span class="muted">Per line</span><div class="seg" id="expPer">${['c', 0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `<button data-v="${n}" class="${n === perLine ? 'on' : ''}"${n === 'c' ? ' title="Break lines where the canvas wraps"' : ''}>${n === 'c' ? 'Canvas' : n || 'All'}</button>`).join('')}</div>` : ''}
     </div>
     <textarea class="code" id="expText" readonly spellcheck="false"></textarea>
+    ${lookRow()}
     <div class="mfoot"><span class="muted">Needs <code>\\usepackage{zxdiagram}</code> — <button class="linkbtn" id="expGuide">how to set it up</button></span><span class="grow"></span>
       <button class="btn ghost" id="expDl">${I.down}<span>.tex</span></button>
       <button class="btn primary" id="expCopy">Copy</button></div>`;
@@ -2404,7 +2901,7 @@ function exportTex(root) {
   const ta = $('#expText');
   const gen = () => {
     const wrap = wrapEl.checked;
-    ta.value = doc.diagrams.length ? ZX.docTex(doc, { wrap, only: scope === 'one' ? activeDi : null, perLine: perLine === 'c' ? null : perLine || null, starts: perLine === 'c' ? lineStarts() : null }) : '% empty';
+    ta.value = doc.diagrams.length ? ZX.docTex(doc, { look: texLook, wrap, only: scope === 'one' ? activeDi : null, perLine: perLine === 'c' ? null : perLine || null, starts: perLine === 'c' ? lineStarts() : null }) : '% empty';
     if (perEl) perEl.classList.toggle('dim', !wrap || scope === 'one');
   };
   const wrapEl = root.querySelector('#expWrap'), perEl = root.querySelector('#expPer'), scopeEl = root.querySelector('#expScope'), per = perEl;
@@ -2414,6 +2911,7 @@ function exportTex(root) {
     per.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); syncPill(per); gen();
   });
   gen();
+  bindLooks(root, gen);
   wrapEl.addEventListener('change', gen);
   if (hasActive) scopeEl.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; scope = b.dataset.v; scopeEl.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); syncPill(scopeEl); gen(); });
   $('#expCopy').addEventListener('click', async () => {
@@ -2461,6 +2959,7 @@ function exportTikz(root) {
       <div class="seg" data-seg="tk-fmt" id="tkFmt"><button data-v="snip" class="${tkState.fmt === 'snip' ? 'on' : ''}" title="A picture to \\input into your document">Picture</button><button data-v="doc" class="${tkState.fmt === 'doc' ? 'on' : ''}" title="A complete standalone .tex file">Standalone</button></div>
     </div>
     <div class="tkwrap"><textarea class="code" id="tkText" readonly spellcheck="false"></textarea><div class="tkprev" id="tkPrev"><div class="mbusy"><span class="spin"></span>Measuring with the TeX fonts…</div></div></div>
+    ${lookRow()}
     <div class="mfoot"><span class="muted">Plain TikZ — no <code>zx-calculus</code> or <code>zxdiagram.sty</code> needed. Same geometry as Export → Image (right).</span><span class="grow"></span>
       <button class="btn ghost" id="tkDl">${I.down}<span>${tkState.fmt === 'doc' ? '.tex' : '.tikz'}</span></button>
       <button class="btn primary" id="tkCopy">Copy</button></div>`;
@@ -2468,6 +2967,7 @@ function exportTikz(root) {
   const sc = root.querySelector('#tkScope'); if (sc) sc.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; tkState.scope = b.dataset.v; save(); exportTikz(root); });
   root.querySelector('#tkFmt').addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; tkState.fmt = b.dataset.v; save(); exportTikz(root); });
   bindPicker(root, 'tkPick', () => exportTikz(root));
+  bindLooks(root, () => exportTikz(root));
   let name = 'zx-diagram';
   loadMathJax().then(() => {
     if (!root.isConnected) return;
@@ -2528,6 +3028,7 @@ function exportImage(root) {
       <label class="chk"><input type="checkbox" id="imgWhite"${imgState.white ? ' checked' : ''}> White background</label>
     </div>
     <div class="imgprev" id="imgPrev"><div class="mbusy"><span class="spin"></span>Typesetting with the TeX fonts…</div></div>
+    ${lookRow()}
     <div class="mfoot"><span class="muted">Same sizes as <code>zxdiagram.sty</code>, formulas set in TeX fonts (MathJax).${imgState.scope === 'page' ? ' Lines break where the canvas wraps.' : ''}</span><span class="grow"></span>
       <div class="cond${imgState.fmt === 'png' && imgState.scope !== 'each' ? '' : ' off'}" data-cond="img-copy"><button class="btn ghost" id="imgCopy">${I.copy}<span>Copy</span></button></div>
       <button class="btn primary" id="imgDl">${I.down}<span>${imgState.scope === 'each' ? 'Download all' : 'Download'}</span></button></div>`;
@@ -2536,6 +3037,7 @@ function exportImage(root) {
   root.querySelectorAll('.seg button[data-k]').forEach((b) => b.addEventListener('click', () => {
     const v = b.dataset.v; imgState[b.dataset.k] = b.dataset.k === 'scale' ? +v : v; save(); exportImage(root);
   }));
+  bindLooks(root, () => exportImage(root));
   root.querySelector('#imgWhite').addEventListener('change', (e) => { imgState.white = e.target.checked; save(); exportImage(root); });
   liftOpts(root);
   keepMotion(root);
@@ -2600,7 +3102,7 @@ function mjBox(texSrc, pt) {
   mjCache.set(key, r);
   return r;
 }
-const mjPlace = (b, x, y) => `<svg x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${b.w.toFixed(2)}" height="${b.h.toFixed(2)}" viewBox="${b.vb.join(' ')}" overflow="visible" color="#000" fill="#000">${b.body}</svg>`;
+const mjPlace = (b, x, y, c = '#000') => `<svg x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${b.w.toFixed(2)}" height="${b.h.toFixed(2)}" viewBox="${b.vb.join(' ')}" overflow="visible" color="${c}" fill="${c}">${b.body}</svg>`;
 const lenMM = (v) => {
   const m = /^\s*(-?[\d.]+)\s*(mm|cm|pt|em|ex)?\s*$/.exec(v || '');
   if (m) return +m[1] * ({ mm: 1, cm: 10, pt: 25.4 / 72.27, em: 3.5, ex: 1.6 }[m[2] || 'pt']);
@@ -2643,6 +3145,11 @@ function drawMArrow(n, p, w) {
   return { svg: svg.join(''), tk: tk.join(' ') };
 }
 function drawDiagram(d) {
+  const io = expLook.io ? ioMap(d) : null;   // marked open ends (export switch)
+  const bw = !expLook.clr;                     // black-and-white spiders (export switch)
+  const av0 = ZX.avoidOpts(d, ZX.spreadOpts({ edges: ZX.plainEdges(d, ZX.matBundles(d)) }));   // wires bent around nodes, as in LaTeX
+  const bgeo = new Map(d.nodes.filter((n) => n.t === 'B').map((n) => [n.id, ZX.boxGeom(d, n)]));   // in whole cells, before halving
+  const lean = new Map(d.nodes.map((n) => [n.id, ZX.textLean(d, n)]));   // text cells beside a spider lean away, as in LaTeX
   d = ZX.texGrid(d);   // half cells: a grid twice as fine, half the spacing (as \zx[zxHalf] in LaTeX)
   const o = ZX.splitOpts(d.opts || '');
   const get = (k) => { const t = o.find((x) => x.startsWith(k)); return t ? lenMM(t.split('=')[1]) : null; };
@@ -2650,23 +3157,35 @@ function drawDiagram(d) {
   if (o.includes('zxHalf')) { colSep = colSep ?? 1.6; rowSep = rowSep ?? 1.4; }
   const explicit = (colSep != null || rowSep != null || o.includes('circuit')) && !o.includes('zxHalf');
   if (o.includes('circuit')) { colSep = colSep ?? 4; rowSep = rowSep ?? 4; }
-  const wireOnly = !d.nodes.some((n) => n.t === 'Z' || n.t === 'X' || n.t === 'H' || n.t === 'M');
+  const wireOnly = !d.nodes.some((n) => n.t === 'Z' || n.t === 'X' || n.t === 'H' || n.t === 'M' || n.t === 'B');
   colSep = colSep ?? (wireOnly ? 12 : 3.2); rowSep = rowSep ?? 2.8;
-  const spider = explicit ? 2 : 2.6, pad = explicit ? 0 : 2.6;
+  const gridded = d.nodes.some((n) => n.t === 'B');   // \zx[zxGrid]: every cell one cell apart, as on the canvas
+  const spider = gridded ? 2 : explicit ? 2 : 2.6, pad = explicit && !gridded ? 0 : 2.6;
+  const phPt = gridded ? 6 : 8 * 0.8;   // phases (and, gridded, text cells) at the size zxdiagram.sty uses: zxGrid draws them smaller, as on the canvas
   const LW = 0.5 * PTPX;
   // node boxes (mm)
   const box = new Map();
   d.nodes.forEach((n) => {
     if (n.t === 'N' || n.t === 'P') return box.set(n.id, { w: 0, h: pad });
+    if (n.t === 'B') { const g = bgeo.get(n.id); return box.set(n.id, { w: 0, h: 0, bx: g, lab: mjBox(ZX.labelMath((n.label || '').trim()) || '\\,', gridded ? 7 : 8 * 0.8) }); }   // phase size, as \zxBlock   // takes no room, as \zxBlock
+    if (n._fill) return box.set(n.id, { w: 2.6, h: pad });   // empty cell under a box (\zxN[zxFill]{})
     if (n.t === 'H') return box.set(n.id, { w: 1.7, h: 1.7 });
     if (n.t === 'M') return box.set(n.id, { w: 9, h: 2.6, mat: true });
-    if (n.t === 'T') { const b = mjBox(DOTS.test((n.label || '').trim()) ? n.label : n.label || '\\cdot', 10); return box.set(n.id, { w: b.w / PX, h: b.h / PX, lab: b }); }
+    if (n.t === 'T') { const b = mjBox(DOTS.test((n.label || '').trim()) ? n.label : n.label || '\\cdot', gridded ? 6 : 10); return box.set(n.id, { w: b.w / PX, h: b.h / PX, lab: b }); }
     if (n.cmd === 'Ctrl' && !n.label) return box.set(n.id, { w: 1.13, h: 1.13, ctrl: true });
     if (n.cmd === 'Not' && !n.label) return box.set(n.id, { w: 2.6, h: 2.6, not: true });
     const L = (n.label || '').trim();
     if (!L) return box.set(n.id, { w: spider, h: spider });
-    const b = mjBox(L, 8 * 0.8);
-    box.set(n.id, { w: Math.max(4, b.w / PX + 1.9), h: Math.max(4, b.h / PX + 0.7), lab: b });
+    const b = mjBox(L, phPt);
+    box.set(n.id, gridded ? { w: Math.max(2.72, b.w / PX + 0.6), h: Math.max(2.72, b.h / PX + 0.5), lab: b } : { w: Math.max(4, b.w / PX + 1.9), h: Math.max(4, b.h / PX + 0.7), lab: b });
+  });
+  // empty cells under a box keep one cell of width, as \zxN[zxFill]{} does in LaTeX
+  d = Object.assign({}, d, { nodes: d.nodes.slice() });   // fillers go into a copy, never into the page
+  const taken = new Set(d.nodes.map((n) => n.r + ',' + n.c)), hk = o.includes('zxHalf') ? 2 : 1;
+  d.nodes.filter((n) => n.t === 'B').forEach((n) => {
+    const X = ZX.boxExt(n);
+    for (let r = Math.ceil(n.r - X.t * hk); r <= Math.floor(n.r + X.b * hk); r++) for (let c = Math.ceil(n.c - X.l * hk); c <= Math.floor(n.c + X.r * hk); c++)
+      if (!taken.has(r + ',' + c)) { const f = { id: '_f' + r + '_' + c, r, c, t: 'N', _fill: true }; d.nodes.push(f); box.set(f.id, { w: 2.6, h: pad }); taken.add(r + ',' + c); }
   });
   const B = ZX.bounds(d);
   const colW = [], rowH = [];
@@ -2675,6 +3194,7 @@ function drawDiagram(d) {
   const X = [colW[0] / 2], Y = [rowH[0] / 2];
   for (let c = 1; c < colW.length; c++) X[c] = X[c - 1] + colW[c - 1] / 2 + colSep + colW[c] / 2;
   for (let r = 1; r < rowH.length; r++) Y[r] = Y[r - 1] + rowH[r - 1] / 2 + rowSep + rowH[r] / 2;
+  if (gridded) { X.forEach((_, c) => { X[c] = c * 5.8 / hk; }); Y.forEach((_, r) => { Y[r] = r * 5.4 / hk; }); }
   const pos = (dd, n) => ({ x: X[n.c - B.c0] * PX, y: Y[n.r - B.r0] * PX });
   // wires first (same curve maths as the editor, which follows TikZ), then nodes on top
   const W = [], N = [], TW = [], TN = [];
@@ -2682,36 +3202,54 @@ function drawDiagram(d) {
   const grow = (x0, y0, x1, y1) => { minX = Math.min(minX, x0); minY = Math.min(minY, y0); maxX = Math.max(maxX, x1); maxY = Math.max(maxY, y1); };
   const byId = new Map(d.nodes.map((n) => [n.id, n]));
   const bun = ZX.matBundles(d);
-  const spread = ZX.spreadOpts({ edges: d.edges.filter((e) => !bun.has(e.id)) });   // same bends as the LaTeX export
+  const spread = ZX.spreadOpts({ edges: ZX.plainEdges(d, bun) });   // same bends as the LaTeX export
   d.edges.forEach((e0) => {
-    const e = spread.has(e0.id) ? Object.assign({}, e0, { o: spread.get(e0.id) }) : e0;
+    const e = av0.has(e0.id) ? Object.assign({}, e0, { o: av0.get(e0.id) }) : spread.has(e0.id) ? Object.assign({}, e0, { o: spread.get(e0.id) }) : e0;
     const A = byId.get(e.a), Bn = byId.get(e.b), bu = bun.get(e.id);
     if (!A || !Bn || (bu && !bu.lead)) return;
-    mTipHalf = 4.5 * PX;
+    mTipHalf = 4.5 * PX; bxGeo = bgeo; bxScale = { x: 5.8 * PX, y: 5.4 * PX };   // \zxCellW / \zxCellH per whole cell
     const g = rawGeom(d, e, A, Bn, pos);
-    mTipHalf = 0;
-    const lw = bu ? 1.3 * PTPX : LW;   // arrow → arrow: one bold wire
-    W.push(`<path d="${g.d}" fill="none" stroke="#000" stroke-width="${lw.toFixed(2)}" stroke-linecap="${bu ? 'butt' : 'round'}"/>`);
-    TW.push(bu ? `\\draw[line width=1.3pt] ${tkPath(g.d)};` : `\\draw ${tkPath(g.d)};`);
+    mTipHalf = 0; bxGeo = bxScale = null;
+    const he = g.h && !bu, col = !he && !bu && expLook.col && /^#[0-9a-f]{6}$/i.test(wcol(e0.col)) ? wcol(e0.col) : '';
+    const lw = bu ? 1.3 * PTPX : he ? 1.2 * PTPX : LW;   // arrow → arrow: one bold wire; Hadamard edge: bold blue dashed
+    W.push(`<path d="${g.d}" fill="none" stroke="${he ? HE_COL : col || '#000'}" stroke-width="${lw.toFixed(2)}" stroke-linecap="${bu || he ? 'butt' : 'round'}"${he ? ` stroke-dasharray="${(2.2 * PTPX).toFixed(2)} ${(1.4 * PTPX).toFixed(2)}"` : ''}/>`);
+    const rgb = (h) => `{rgb,255:red,${parseInt(h.slice(1, 3), 16)};green,${parseInt(h.slice(3, 5), 16)};blue,${parseInt(h.slice(5, 7), 16)}}`;
+    TW.push(bu ? `\\draw[line width=1.3pt] ${tkPath(g.d)};` : he ? `\\draw[draw=zxHE, line cap=butt, dash pattern=on 2.2pt off 1.4pt, line width=1.2pt] ${tkPath(g.d)};` : col ? `\\draw[draw=${rgb(col)}] ${tkPath(g.d)};` : `\\draw ${tkPath(g.d)};`);
     (g.pts || []).forEach((p) => grow(p.x, p.y, p.x, p.y));
-    if (g.h) { const s = 1.7 * PX; N.push(`<rect x="${(g.m.x - s / 2).toFixed(2)}" y="${(g.m.y - s / 2).toFixed(2)}" width="${s.toFixed(2)}" height="${s.toFixed(2)}" fill="#ffffbe" stroke="#000" stroke-width="${LW.toFixed(2)}"/>`); TN.push(`\\draw[fill=zxH] ${tkP(g.m.x - s / 2, g.m.y - s / 2)} rectangle ${tkP(g.m.x + s / 2, g.m.y + s / 2)};`); }
   });
   d.nodes.forEach((n) => {
     const p = pos(d, n), b = box.get(n.id), w = b.w * PX, h = b.h * PX;
     grow(p.x - w / 2, p.y - h / 2, p.x + w / 2, p.y + h / 2);
+    const dot = (r, fill, tk) => { N.push(`<circle cx="${p.x.toFixed(2)}" cy="${p.y.toFixed(2)}" r="${(r * PX).toFixed(2)}" fill="${fill}"/>`); TN.push(`\\fill[${tk}] ${tkP(p.x, p.y)} circle (${r}mm);`); };
+    if (n.t === 'P' && expLook.dots) dot(0.55, '#000', 'black');
+    else if (n.t === 'N' && io && io.has(n.id)) {   // open end: dashed ring with a light fill, as on the canvas
+      const i = io.get(n.id).startsWith('in'), c = i ? IN_COL : OUT_COL, r = 0.7 * PX;
+      N.push(`<circle cx="${p.x.toFixed(2)}" cy="${p.y.toFixed(2)}" r="${r.toFixed(2)}" fill="${c}" fill-opacity="0.13" stroke="${c}" stroke-width="${(0.5 * PTPX).toFixed(2)}" stroke-dasharray="${(0.8 * PTPX).toFixed(2)} ${(0.6 * PTPX).toFixed(2)}"/>`);
+      TN.push(`\\draw[${i ? 'zxIn' : 'zxOut'}, fill=${i ? 'zxIn' : 'zxOut'}, fill opacity=0.13, line width=0.5pt, dash pattern=on 0.8pt off 0.6pt] ${tkP(p.x, p.y)} circle (0.7mm);`);
+    }
     if (n.t === 'N' || n.t === 'P') return;
     const stroke = `stroke="#000" stroke-width="${LW.toFixed(2)}"`;
     if (b.mat) { const r = drawMArrow(n, p, w); N.push(r.svg); TN.push(r.tk); return; }
-    if (n.t === 'H') { N.push(`<rect x="${(p.x - w / 2).toFixed(2)}" y="${(p.y - h / 2).toFixed(2)}" width="${w.toFixed(2)}" height="${h.toFixed(2)}" fill="#ffffbe" ${stroke}/>`); TN.push(`\\draw[fill=zxH] ${tkP(p.x - w / 2, p.y - h / 2)} rectangle ${tkP(p.x + w / 2, p.y + h / 2)};`); return; }
-    if (n.t === 'T') { N.push(mjPlace(b.lab, p.x - b.lab.w / 2, p.y - b.lab.h / 2)); TN.push(`\\node[inner sep=0pt] at ${tkP(p.x, p.y)} {$${DOTS.test((n.label || '').trim()) ? n.label.trim() : n.label || '\\cdot'}$};`); return; }
+    if (b.bx) {
+      const ux = 5.8 * PX, uy = 5.4 * PX, gx = b.bx;   // per whole cell (zxGrid)
+      p.x += gx.cx * ux; p.y += gx.cy * uy;   // the box's centre (it may reach further on one side)
+      const bwid = gx.W * ux, bht = gx.H * uy, f = bw ? '#ffffff' : n.fill || '#e9ecf1';
+      grow(p.x - bwid / 2, p.y - bht / 2, p.x + bwid / 2, p.y + bht / 2);
+      N.push(`<rect x="${(p.x - bwid / 2).toFixed(2)}" y="${(p.y - bht / 2).toFixed(2)}" width="${bwid.toFixed(2)}" height="${bht.toFixed(2)}" fill="${f}" ${stroke}/>`, (n.vt ? `<g transform="rotate(-90 ${p.x.toFixed(2)} ${p.y.toFixed(2)})">` : '') + mjPlace(b.lab, p.x - b.lab.w / 2, p.y - b.lab.h / 2) + (n.vt ? '</g>' : ''));
+      const rgb = (h) => `{rgb,255:red,${parseInt(h.slice(1, 3), 16)};green,${parseInt(h.slice(3, 5), 16)};blue,${parseInt(h.slice(5, 7), 16)}}`;
+      TN.push(`\\draw[fill=${rgb(f)}] ${tkP(p.x - bwid / 2, p.y - bht / 2)} rectangle ${tkP(p.x + bwid / 2, p.y + bht / 2)};`, `\\node[inner sep=0pt${n.vt ? ', rotate=90' : ''}] at ${tkP(p.x, p.y)} {\\scalebox{${gridded ? 0.7 : 0.64}}{${(n.label || '').trim()}}};`);
+      return;
+    }
+    if (n.t === 'H') { N.push(`<rect x="${(p.x - w / 2).toFixed(2)}" y="${(p.y - h / 2).toFixed(2)}" width="${w.toFixed(2)}" height="${h.toFixed(2)}" fill="${bw ? '#fff' : '#ffffbe'}" ${stroke}/>`); TN.push(`\\draw[fill=${bw ? 'white' : 'zxH'}] ${tkP(p.x - w / 2, p.y - h / 2)} rectangle ${tkP(p.x + w / 2, p.y + h / 2)};`); return; }
+    if (n.t === 'T') { const ln = lean.get(n.id) || '', sx = ln === 'L' ? -1 : ln === 'R' ? 1 : 0, sy = ln === 'U' ? -1 : ln === 'D' ? 1 : 0; const lx = p.x - b.lab.w / 2 + sx * (b.lab.w / 2 - 0.5 * PX), ly = p.y - b.lab.h / 2 + sy * (b.lab.h / 2 - 0.4 * PX); N.push(mjPlace(b.lab, lx, ly)); TN.push(`\\node[inner sep=0pt${ln ? `, anchor=${{ L: 'east', R: 'west', U: 'south', D: 'north' }[ln]}, ${sx ? `xshift=${-sx * 0.5}mm` : `yshift=${sy * 0.4}mm`}` : ''}] at ${tkP(p.x, p.y)} {${gridded ? '\\scalebox{0.6}{' : ''}$${DOTS.test((n.label || '').trim()) ? n.label.trim() : n.label || '\\cdot'}$${gridded ? '}' : ''}};`); return; }
     if (b.ctrl) { N.push(`<circle cx="${p.x.toFixed(2)}" cy="${p.y.toFixed(2)}" r="${(w / 2).toFixed(2)}" fill="#000"/>`); TN.push(`\\fill ${tkP(p.x, p.y)} circle[radius=${tkN(w / 2 * 0.75)}pt];`); return; }
     if (b.not) { const r = w / 2; N.push(`<circle cx="${p.x.toFixed(2)}" cy="${p.y.toFixed(2)}" r="${r.toFixed(2)}" fill="#fff" ${stroke}/><path d="M${p.x - r} ${p.y}h${2 * r}M${p.x} ${p.y - r}v${2 * r}" ${stroke}/>`); TN.push(`\\draw[fill=white] ${tkP(p.x, p.y)} circle[radius=${tkN(r * 0.75)}pt]; \\draw ${tkP(p.x - r, p.y)} -- ${tkP(p.x + r, p.y)} ${tkP(p.x, p.y - r)} -- ${tkP(p.x, p.y + r)};`); return; }
-    const fill = n.t === 'Z' ? '#d8f8d8' : '#e8a5a5';
+    const fill = bw ? (n.t === 'Z' ? '#fff' : '#000') : n.t === 'Z' ? '#d8f8d8' : '#e8a5a5';
     N.push(`<rect x="${(p.x - w / 2).toFixed(2)}" y="${(p.y - h / 2).toFixed(2)}" width="${w.toFixed(2)}" height="${h.toFixed(2)}" rx="${(Math.min(w, h) / 2).toFixed(2)}" fill="${fill}" ${stroke}/>`);
-    const col = n.t === 'Z' ? 'zxZ' : 'zxX';
+    const col = bw ? (n.t === 'Z' ? 'white' : 'black') : n.t === 'Z' ? 'zxZ' : 'zxX', inv = bw && n.t === 'X';   // inv: white phase on black
     if (Math.abs(w - h) < 0.01) TN.push(`\\draw[fill=${col}] ${tkP(p.x, p.y)} circle[radius=${tkN(w / 2 * 0.75)}pt];`);
     else TN.push(`\\draw[fill=${col}, rounded corners=${tkN(Math.min(w, h) / 2 * 0.75)}pt] ${tkP(p.x - w / 2, p.y - h / 2)} rectangle ${tkP(p.x + w / 2, p.y + h / 2)};`);
-    if (b.lab) { N.push(mjPlace(b.lab, p.x - b.lab.w / 2, p.y - b.lab.h / 2)); TN.push(`\\node[inner sep=0pt] at ${tkP(p.x, p.y)} {\\scalebox{0.64}{$${(n.label || '').trim()}$}};`); }
+    if (b.lab) { N.push(mjPlace(b.lab, p.x - b.lab.w / 2, p.y - b.lab.h / 2, inv ? '#fff' : '#000')); TN.push(`\\node[inner sep=0pt${inv ? ', text=white' : ''}] at ${tkP(p.x, p.y)} {\\scalebox{${gridded ? 0.6 : 0.64}}{$${(n.label || '').trim()}$}};`); }
   });
   if (!isFinite(minX)) { minX = minY = 0; maxX = maxY = 1; }
   const m = LW;
@@ -2727,7 +3265,7 @@ function drawChain(idx, lines) {
   let cur = [];
   idx.forEach((i, k) => {
     if (k && lines && lines[i]) { rows.push(cur); cur = []; }
-    if (k && rel(i - 1)) cur.push({ rel: mjBox(rel(i - 1), 10) });
+    if (k && rel(i - 1)) cur.push({ rel: mjBox(ZX.sepScalarTex(rel(i - 1), (x) => `{\\scriptstyle ${x}}`), 10) });   // scalars smaller, as \zxScalar
     else if (k) cur.push({ space: gap * 2 });
     cur.push({ d: drawDiagram(doc.diagrams[i]) });
   });
@@ -2760,7 +3298,7 @@ function drawChain(idx, lines) {
 function tikzFile(g, standalone) {
   const pic = `% ZX Draw — plain TikZ, drawn like the image export. Needs \\usepackage{tikz} and \\usepackage{graphicx}.
 \\begingroup
-\\definecolor{zxZ}{HTML}{D8F8D8}\\definecolor{zxX}{HTML}{E8A5A5}\\definecolor{zxH}{HTML}{FFFFBE}
+\\definecolor{zxZ}{HTML}{D8F8D8}\\definecolor{zxX}{HTML}{E8A5A5}\\definecolor{zxH}{HTML}{FFFFBE}\\definecolor{zxHE}{HTML}{4488CC}\\definecolor{zxIn}{HTML}{5B5BD6}\\definecolor{zxOut}{HTML}{D9822B}
 \\begin{tikzpicture}[line width=0.5pt, line cap=round, line join=round, baseline=(current bounding box.center), every node/.style={font=\\fontsize{10pt}{12pt}\\selectfont}]
 ${g.tk}
 \\end{tikzpicture}
@@ -2888,12 +3426,11 @@ const DEMOS = {
   // a wire's colour and line style (for your own eyes)
   look: () => {
     const cols = ['#3a3a3c', '#f07c7c', '#e9c46a', '#7cc68d', '#6cb2f0'];
-    return demoSvg(`<path d="M40 38H180" fill="none" stroke-width="2" stroke-linecap="round" stroke="#1d1d1f">${anim('stroke', '#1d1d1f;#1d1d1f;#6cb2f0;#6cb2f0', '0;.3;.32;1', ' calcMode="discrete"')}${anim('stroke-dasharray', 'none;none;6 4;6 4', '0;.62;.64;1', ' calcMode="discrete"')}</path>`
+    return demoSvg(`<path d="M40 38H180" fill="none" stroke-width="2" stroke-linecap="round" stroke="#1d1d1f">${anim('stroke', '#1d1d1f;#1d1d1f;#6cb2f0;#6cb2f0', '0;.3;.32;1', ' calcMode="discrete"')}</path>`
       + sp(40, 38, 'Z') + sp(180, 38, 'X')
       + cols.map((c, i) => `<rect x="${38 + i * 16}" y="76" width="11" height="11" rx="3" fill="${c}"/>`).join('')
       + `<rect x="100" y="73.5" width="16" height="16" rx="4" fill="none" stroke="#6cb2f0" stroke-width="1.4" opacity="0">${anim('opacity', '0;0;1;1', '0;.3;.32;1', ' calcMode="discrete"')}</rect>`
-      + `<rect x="128" y="72" width="58" height="19" rx="6" fill="#f2f2f0"/><path d="M134 81.5h12" stroke="#1d1d1f" stroke-width="1.6"/><path d="M154 81.5h12" stroke="#1d1d1f" stroke-width="1.6" stroke-dasharray="3.5 2.5"/><path d="M172 81.5h10" stroke="#1d1d1f" stroke-width="2" stroke-dasharray="0 3" stroke-linecap="round"/>`
-      + `<g>${move('70 105;103 84;103 84;160 86;160 86;70 105', '0;.24;.36;.56;.7;1')}${CUR}</g>`);
+      + `<g>${move('70 105;103 84;103 84;70 105', '0;.3;.7;1')}${CUR}</g>`);
   },
   // text cells: ⋮ ⋯ ⋱ between wires
   text: () => {
@@ -2919,7 +3456,7 @@ const GUIDE_KEYS = () => [   // read when the guide opens (key bindings load lat
   ['swap', ['W'], 'Swap two nodes', 'Select exactly two nodes and press W: they trade places and each takes over the other’s wires. With anything else selected, W picks the wire tool.'],
   ['colour', [keys.swap], 'Swap colour', 'Turns the selected Z spiders into X spiders and back.'],
   ['pick', [keys.select, 'click'], 'Choose what box-select picks', 'Click V again (or right-click it): switch off kinds such as wires or text cells, or hover a row and press Only. A dot on V means a filter is on; All brings everything back.'],
-  ['look', ['click'], 'Colour a wire', 'Select one or more wires: the panel has 10 colours and solid, dashed or dotted lines. Only for telling wires apart — it changes nothing in the maths or in LaTeX.'],
+  ['look', ['click'], 'Colour a wire', 'Select one or more wires: the panel has 10 colours. Only for telling wires apart — it changes nothing in the maths; Export can keep them (Include → Wire colours). Blue dashed is reserved for Hadamard edges: select wires and press H.'],
   ['text', [keys.T], 'Text cells', 'T places a text cell (⋮ to start). Its panel offers ⋮ ⋯ ⋱ … ⊗ ⊗n n m k, or type any LaTeX. Text cells are ignored when computing.'],
   ['rotate', [keys.rotate], 'Rotate 180°', 'O turns the current diagram half way round: inputs become outputs, bends and curve styles are turned with it.'],
 ];
@@ -3008,11 +3545,12 @@ const ACTIONS = [
   ['hand', 'Tools', 'Hand — drag anywhere to move around the canvas', 'g', () => setTool('hand')],
   ['Z', 'Tools', 'Z spider — click a cell to place, click a node to recolour', 'z', () => setTool('Z')],
   ['X', 'Tools', 'X spider', 'x', () => setTool('X')],
-  ['H', 'Tools', 'Hadamard box', 'h', () => setTool('H')],
+  ['H', 'Tools', 'Hadamard box tool; with wires selected: turn them into Hadamard edges and back', 'h', () => toggleHEdges() || setTool('H')],
   ['N', 'Tools', 'Wire point / boundary', 'n', () => setTool('N')],
   ['P', 'Tools', 'Dot — a routing point for wires (bends, swaps, crossings); exported as an empty \\zxN', 'd', () => setTool('P')],
   ['T', 'Tools', 'Text cell (⋮, labels) — ignored when computing', 't', () => setTool('T')],
   ['M', 'Tools', 'Matrix arrow — a phase-free Z/X block given by a 0/1 matrix A (type its entries in the panel)', 'a', () => setTool('M')],
+  ['B', 'Tools', 'Box — a labelled gate (I, X, Y, Z are computed; any other label is drawing only). Drag its edge handles to span more cells', 'b', () => setTool('B')],
   ['edge', 'Tools', 'Wire — drag between nodes or empty cells', 'e', () => setTool('edge')],
   ['swap', 'Edit', 'Swap Z ↔ X colour of the selection', 'c', () => swapColour()],
   ['matx', 'Edit', 'Matrix arrow ⇄ Z/X spiders: expand the selected arrow, or fold the selected (or any found) phase-free Z–X block into one', 'shift+a', () => toggleMat()],
@@ -3021,7 +3559,7 @@ const ACTIONS = [
   ['delete', 'Edit', 'Delete the selection (a node with one wire in and one out leaves the wire)', 'backspace', () => deleteSel()],
   ['tidy', 'View', 'Tidy layout', 'l', () => tidyAll()],
   ['fit', 'View', 'Fit to screen', 'f', () => fit()],
-  ['preview', 'View', 'Preview without editing guides', 'p', () => togglePreview()],
+  ['preview', 'View', 'Preview without editing guides; with several nodes selected: wire them in parallel', 'p', () => parKey() || togglePreview()],
   ['zin', 'View', 'Zoom in', '=', () => zoomBy(1.25)],
   ['zout', 'View', 'Zoom out', '-', () => zoomBy(1 / 1.25)],
   ['z100', 'View', 'Zoom to 100%', '0', () => zoomTo(1)],
@@ -3094,6 +3632,9 @@ const RULE_LIB = [
   ['(sp)', '0-legged spiders', 'A phase-free spider with no legs is a scalar (2); both colours agree, and it equals the empty diagram up to a scalar.', String.raw`\zx{\zxZ{}} = \zx{\zxX{}} \propto \zx{}`],
   ['(ho)', 'Hopf law', 'Two wires between a Z and an X spider disconnect (up to a scalar ½).', String.raw`\zx{\zxN{} \rar & \zxZ{} \ar[r, bend left] \ar[r, bend right] & \zxX{} \rar & \zxN{}} \stackrel{\mathbf{(ho)}}{\propto} \zx{\zxN{} \rar & \zxZ{} & \zxX{} \rar & \zxN{}}`],
   ['(sp)', 'Phases add', 'Two π states fuse; phases add modulo 2π.', String.raw`\zx{\zxZ{\pi} \rar & \zxZ{\pi} \rar & \zxN{}} \stackrel{\mathbf{(sp)}}{=} \zx{\zxZ{} \rar & \zxN{}}`],
+  ['(lc\')', 'Local complementation (phases)', 'A ±π/2 spider joined by Hadamard edges to n spiders disappears: its neighbours become fully connected (edges between them toggle) and each gains ∓π/2.', String.raw`\zx{& & \zxZ{\pm\frac{\pi}{2}} \ar[dll, zxHE] \ar[drr, zxHE] \ar[ddl, zxHE] \ar[ddr, zxHE] & & \\ \zxZ{\alpha_1} \dar & & & & \zxZ{\alpha_n} \dar \\ \zxN{} & \zxZ{\alpha_2} \dar & \cdots & \zxZ{\alpha_{n-1}} \dar & \zxN{} \\ & \zxN{} & & \zxN{} &} \stackrel{\mathbf{(lc')}}{\propto} \zx{\zxZ{\alpha_1\mp\frac{\pi}{2}} \dar \ar[rrrr, zxHE] \ar[dr, zxHE] \ar[drrr, zxHE] & & & & \zxZ{\alpha_n\mp\frac{\pi}{2}} \dar \ar[dlll, zxHE] \ar[dl, zxHE] \\ \zxN{} & \zxZ{\alpha_2\mp\frac{\pi}{2}} \dar \ar[rr, zxHE] & & \zxZ{\alpha_{n-1}\mp\frac{\pi}{2}} \dar & \zxN{} \\ & \zxN{} & \cdots & \zxN{} &}`],
+  ['(lc)', 'Local complementation', 'A spider with Hadamard edges to its neighbours: complementing the neighbourhood (now fully connected) costs −π/2 (X) on its own wire and π/2 (Z) on each neighbour.', String.raw`\zx{& & & \zxN{} & & \zxN{} \\ & & \zxZ{} \ar[ur] & & \zxZ{} \ar[ur] & \\ \zxN{} \rar & \zxZ{} \ar[ur, zxHE] \ar[urrr, zxHE] \ar[dr, zxHE] \ar[drrr, zxHE] & & & & \vdots \\ & & \zxZ{} \ar[dr] & & \zxZ{} \ar[dr] & \\ & & & \zxN{} & & \zxN{}} \stackrel{\mathbf{(lc)}}{\propto} \zx{& & & & \zxN{} & & \zxN{} \\ & & & \zxZ{\frac{\pi}{2}} \ar[ur] \ar[rr, zxHE] \ar[dd, zxHE] \ar[ddrr, zxHE] & & \zxZ{\frac{\pi}{2}} \ar[ur] \ar[dd, zxHE] \ar[ddll, zxHE] & \\ \zxN{} \rar & \zxX{-\frac{\pi}{2}} \rar & \zxZ{} \ar[ur, zxHE] \ar[urrr, zxHE] \ar[dr, zxHE] \ar[drrr, zxHE] & & & & \vdots \\ & & & \zxZ{\frac{\pi}{2}} \ar[dr] \ar[rr, zxHE] & & \zxZ{\frac{\pi}{2}} \ar[dr] & \\ & & & & \zxN{} & & \zxN{}}`],
+  ['(lc)', 'Local complementation (graph state)', 'Graph state G and G∗u (edges inside the neighbourhood N(u) toggled) differ by X(−π/2) on u (top) and Z(π/2) on each neighbour.', String.raw`\zx{& \zxZ{} \rar \ar[dl, zxHE] \ar[dd, zxHE] \ar[dddl, zxHE] & \zxN{} \\ \zxZ{} \ar[rr] \ar[dr, zxHE] & & \zxN{} \\ & \zxZ{} \rar & \zxN{} \\ \zxZ{} \ar[rr] \ar[dr, zxHE] & & \zxN{} \\ & \zxZ{} \rar & \zxN{}} \stackrel{\mathbf{(lc)}}{\propto} \zx{& \zxZ{} \rar \ar[dl, zxHE] \ar[dd, zxHE] \ar[dddl, zxHE] & \zxX{-\frac{\pi}{2}} \rar & \zxN{} \\ \zxZ{} \ar[rr] \ar[dd, zxHE] & & \zxZ{\frac{\pi}{2}} \rar & \zxN{} \\ & \zxZ{} \rar \ar[dl, zxHE] & \zxZ{\frac{\pi}{2}} \rar & \zxN{} \\ \zxZ{} \ar[rr] \ar[dr, zxHE] & & \zxZ{\frac{\pi}{2}} \rar & \zxN{} \\ & \zxZ{} \ar[rr] & & \zxN{}}`],
   ['', 'Phase through CNOT control', 'A Z phase commutes through the control of a CNOT.', String.raw`\zx{\zxN{} \rar & \zxZ{\alpha} \rar & \zxZ{} \rar \dar & \zxN{} \\ \zxN{} \ar[rr] & & \zxX{} \rar & \zxN{}} = \zx{\zxN{} \rar & \zxZ{} \rar \dar & \zxZ{\alpha} \rar & \zxN{} \\ \zxN{} \rar & \zxX{} \ar[rr] & & \zxN{}}`],
   ['', 'π through CNOT target', 'An X π phase commutes through the target of a CNOT.', String.raw`\zx{\zxN{} \ar[rr] & & \zxZ{} \rar \dar & \zxN{} \\ \zxN{} \rar & \zxX{\pi} \rar & \zxX{} \rar & \zxN{}} = \zx{\zxN{} \rar & \zxZ{} \ar[rr] \dar & & \zxN{} \\ \zxN{} \rar & \zxX{} \rar & \zxX{\pi} \rar & \zxN{}}`],
   ['', 'Three CNOTs = SWAP', 'Alternating CNOTs swap the two qubits.', String.raw`\zx{\zxN{} \rar & \zxZ{} \rar \dar & \zxX{} \rar & \zxZ{} \rar \dar & \zxN{} \\ \zxN{} \rar & \zxX{} \rar & \zxZ{} \rar \uar & \zxX{} \rar & \zxN{}} \propto \zx{\zxN{} \ar[drr, s] & & \zxN{} \\ \zxN{} \ar[urr, s] & & \zxN{}}`],
@@ -3117,13 +3658,13 @@ function renderMini(src, maxW, maxH) {
       const A = by.get(e.a), B = by.get(e.b);
       if (!A || !B) return;
       const g = edgeGeom(d, e, A, B);
-      S.push(`<path class="wire-p" d="${g.d}"/>${g.h ? `<rect class="hbox" x="${g.m.x - 7}" y="${g.m.y - 7}" width="14" height="14"/>` : ''}`);
+      S.push(`<path class="wire-p${g.h ? ' hedge-p' : ''}" d="${g.d}"/>`);
     });
     d.nodes.forEach((n) => N.push(nodeHTML(n, pos(d, n), false, null, d)));
   });
   // Empty diagram: dashed placeholder box, as on the canvas.
   diagrams.forEach((d, i) => { if (!d.nodes.length) { const r = rects[i]; N.push(`<div class="mini-empty" style="left:${r.x0 + 6}px;top:${r.y0 + 6}px;width:${r.x1 - r.x0 - 12}px;height:${r.y1 - r.y0 - 12}px"></div>`); } });
-  for (let i = 0; i + 1 < rects.length; i++) T.push(`<div class="sep" style="left:${(rects[i].x1 + rects[i + 1].x0) / 2}px;top:0">${tex(seps[i] == null ? '=' : seps[i])}</div>`);
+  for (let i = 0; i + 1 < rects.length; i++) T.push(`<div class="sep" style="left:${(rects[i].x1 + rects[i + 1].x0) / 2}px;top:0">${sepHTML(seps[i] == null ? '=' : seps[i])}</div>`);
   const y0 = Math.min(...rects.map((r) => r.y0)) - 8, y1 = Math.max(...rects.map((r) => r.y1)) + 8;
   const W = x - G, H = y1 - y0, k = Math.min(1, maxW / W, maxH / H);
   return `<div class="mini" style="width:${W * k}px;height:${H * k}px"><div class="mini-in" style="width:${W}px;height:${H}px;transform:scale(${k})"><div style="position:absolute;left:0;top:${-y0}px"><svg class="edges" width="1" height="1">${S.join('')}</svg>${N.join('')}${T.join('')}</div></div></div>`;
@@ -3210,7 +3751,7 @@ function simLane(lane) {
   if (SIM.off) return null;
   if (SIM[lane]) return SIM[lane];
   let w;
-  try { w = new Worker('zx-worker.js?v=6'); } catch (_) { SIM.off = true; return null; }
+  try { w = new Worker('zx-worker.js?v=20'); } catch (_) { SIM.off = true; return null; }
   w.onmessage = (e) => {
     const m = e.data, p = m && SIM.pend.get(m.id);
     if (!p) return;
@@ -3370,7 +3911,10 @@ function openPage(name, d) {
 let matState = { scope: 'one', mode: 'exact', norm: false, vals: {}, check: 'all' };
 try { if (localStorage.getItem('zx-draw-check') === 'current') matState.check = 'current'; } catch (_) {}
 const ketLabels = (n) => Array.from({ length: 1 << n }, (_, x) => n ? x.toString(2).padStart(n, '0') : '');
-const symbolsOf = (ds) => ZXS.symbolsOf(ds);   // quick (numeric), used by the Check popover
+const symbolsOf = (ds) => ZXS.symbolsOf(ds);
+// the shared sign of ± / ∓ is a 0/1 symbol \pm: shown as ± with + / − (∓ takes the other one)
+const boolName = (k) => (k === '\\pm' ? tex('\\pm') : tex(k));
+const boolVal = (k, v) => (k === '\\pm' ? (v ? '−' : '+') : v);   // quick (numeric), used by the Check popover
 // M = ZXS.matrixView(...) result, computed in the background (or { error, nodes })
 function matrixBlock(d, k, V) {
   if (V && V.error) { markErr(V.nodes); return `<div class="mblock"><div class="mhead"><b>${esc(nameOf(k))}</b></div>${errHTML(V.error, V.nodes)}</div>`; }
@@ -3401,14 +3945,15 @@ function checkBlock(i, C) {
   const how = r.exact ? 'exact' : syms.length && matState.check === 'all' ? 'all 0/1 cases, random angles' : 'numeric';
   const word = r.rel === 'eq' ? 'equal' : r.rel === 'prop' ? 'equal up to a non-zero scalar' : 'not equal, not even up to a scalar';
   let cls = 'ok', icon = '✓', msg;
-  if (claim === 'eq' && r.rel === 'prop') { cls = 'warn'; icon = '≈'; msg = `Written “=”, but${scope} they are only ${word}`; }
+  const need = r.factorTex ? `${r.scaled ? 'the scalar should be' : 'missing scalar'} ${tex(r.factorTex)}` : r.factorVaries ? 'the scalar depends on the symbols' : '';
+  if (claim === 'eq' && r.rel === 'prop') { cls = 'warn'; icon = '≈'; msg = `Written “=”, but${scope} they are only ${word}${need ? ` — ${need}` : ''}`; }
   else if ((claim === 'eq' || claim === 'prop') && r.rel === 'ne') {
     cls = 'bad'; icon = '✗';
     msg = `Does not hold${scope}: ${word}${r.why ? ` — ${esc(r.why)}` : ''}`;
     if (syms.length && matState.check === 'all' && r.at) msg += ` — fails e.g. at ${tex(syms.map((k) => `${k}=${+(+r.at[k]).toFixed(3)}`).join(',\\ '))}`;
   }
   else if (claim === 'none' || claim === 'other') { cls = 'info'; icon = '·'; msg = `Diagrams ${i + 1} and ${i + 2} are ${word}${scope}`; }
-  else msg = `Holds${scope}: ${word}`;
+  else msg = `Holds${scope}: ${word}${r.rel === 'prop' && need ? ` — for “=”: ${need}` : ''}`;
   return `<div class="mcheck ${cls}"><span class="mci">${MARK[cls] || icon}</span><span>${tex(s || '\\;')}</span><span>${msg}</span><span class="muted">(${how})</span></div>`;
 }
 function openMatrix(i, keepScope) {
@@ -3432,14 +3977,14 @@ function openMatrix(i, keepScope) {
       mats[k] = await simJob('matrixView', [ds[k], opts]).catch(soft);
       if (matState.scope === 'all' && k + 1 < ds.length) {
         step(`Computing ${++done} of ${todo}…`);
-        chks[k] = await simJob('relationCheck', [ds[k], ds[k + 1], { check: matState.check, values: matState.vals }]).catch(soft);
+        chks[k] = await simJob('relationCheck', [ds[k], ds[k + 1], { check: matState.check, values: matState.vals, sep: sepOf(k), prevSep: k > 0 ? sepOf(k - 1) : '' }]).catch(soft);
       }
     }
     return { ds, syms, mats, chks };
   };
   const draw = ({ ds, syms, mats, chks }) => {
     const symUI = syms.reals.concat(syms.bools).length ? `<div class="msyms">${syms.reals.map((k) => `<label class="msym">${tex(k)}<span>=</span><input type="number" step="0.05" data-sym="${esc(k)}" value="${matState.vals[k]}"><span class="muted">π</span></label>`).join('')}
-      ${syms.bools.map((k) => `<span class="msym">${tex(k)}<span>=</span><div class="seg sm" data-seg="b-${esc(k)}">${[0, 1].map((v) => `<button data-bool="${esc(k)}" data-v="${v}" class="${matState.vals[k] === v ? 'on' : ''}">${v}</button>`).join('')}</div></span>`).join('')}</div>` : '';
+      ${syms.bools.map((k) => `<span class="msym">${boolName(k)}<span>=</span><div class="seg sm" data-seg="b-${esc(k)}">${[0, 1].map((v) => `<button data-bool="${esc(k)}" data-v="${v}" class="${matState.vals[k] === v ? 'on' : ''}">${boolVal(k, v)}</button>`).join('')}</div></span>`).join('')}</div>` : '';
     const blocks = ds.map((d, k) => {
       const idx = matState.scope === 'all' ? k : activeDi;
       return matrixBlock(d, idx, mats[k]) + (matState.scope === 'all' && k + 1 < ds.length ? checkBlock(k, chks[k]) : '');
@@ -3491,6 +4036,35 @@ function openMatrix(i, keepScope) {
   });
 }
 
+// ---------- relation popover: the scalar that would make “=” hold ----------
+const sepFixRes = new Map();   // checkKey → relationCheck result
+function sepFixHTML(i) {
+  if (!doc.diagrams[i + 1] || !doc.diagrams[i].nodes.length || !doc.diagrams[i + 1].nodes.length) return '';
+  const C = sepFixRes.get(checkKey(i));
+  if (!C) return '';
+  if (C.error) return `<span class="muted">Can’t check: ${esc(C.error)}</span>`;
+  const r = C.r, claim = claimOf(sepOf(i));
+  if (r.rel === 'ne') return `<span class="fx bad">${MARK.bad}</span><span>Not equal, not even up to a scalar</span>`;
+  if (r.rel === 'eq' && claim === 'eq') return `<span class="fx ok">${MARK.ok}</span><span>Holds${r.scaled ? ' with this scalar' : ''}</span>`;
+  if (r.factorVaries) return `<span class="fx warn">${MARK.warn}</span><span>Equal up to a scalar that depends on the symbols</span>`;
+  if (!r.factorTex) return '';
+  const cur = sepParts(sepOf(i)).post;
+  return `<span class="fx ${claim === 'eq' ? 'warn' : 'ok'}">${claim === 'eq' ? MARK.warn : MARK.ok}</span><span>${claim === 'eq' ? 'Equal up to a scalar' : 'Proportional'}: needs ${tex('=' + (r.factorTex === '1' ? '' : '\\,' + r.factorTex))}</span>${cur === r.factorTex ? '' : `<button class="chip" data-s="fix" data-v="${esc(r.factorTex)}">Use it</button>`}`;
+}
+function sepFixFetch(i) {
+  const k = checkKey(i);
+  if (sepFixRes.has(k) || !doc.diagrams[i + 1] || !doc.diagrams[i].nodes.length || !doc.diagrams[i + 1].nodes.length) return;
+  simJob('relationCheck', [doc.diagrams[i], doc.diagrams[i + 1], { check: matState.check, values: matState.vals, sep: sepOf(i), prevSep: i > 0 ? sepOf(i - 1) : '' }], 'bg')
+    .then((C) => C, (e) => (e.cancelled ? null : { error: e.message }))
+    .then((C) => {
+      if (!C) return;
+      if (sepFixRes.size > 200) sepFixRes.clear();
+      sepFixRes.set(k, C);
+      const el = pop.dataset.kind === 'sep' && +pop.dataset.i === i && pop.querySelector('.sepfix');
+      if (el && checkKey(i) === k) el.innerHTML = sepFixHTML(i);
+    });
+}
+
 // ---------- live step check: ✓ / ≈ / ✗ on every relation ----------
 // status marks drawn as SVG so they sit exactly in the middle of their circles (font glyphs don't)
 const markSvg = (d) => `<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
@@ -3509,15 +4083,16 @@ const claimOf = (s) => (/\\propto|∝/.test(s) ? 'prop' : /\\approx|≈|Rightarr
 const shape = (d) => [d.nodes.map((n) => [n.id, n.r, n.c, n.t, n.label, n.cmd, n.v]), d.edges.map((e) => [e.a, e.b, e.o])];
 function checkKey(i) {
   const d1 = doc.diagrams[i], d2 = doc.diagrams[i + 1];
-  return JSON.stringify([sepOf(i), matState.check, matState.check === 'current' ? matState.vals : 0, shape(d1), shape(d2)]);
+  return JSON.stringify([sepOf(i), i > 0 ? sepOf(i - 1) : '', matState.check, matState.check === 'current' ? matState.vals : 0, shape(d1), shape(d2)]);
 }
 function checkFrom(i, C) {
   const s = sepOf(i), claim = claimOf(s);
   const syms = C.syms, r = C.r;
   const where = !syms.length ? '' : matState.check === 'current' ? ' at the chosen values' : ' for every value';
-  if (r.rel === 'ne') return { cls: 'bad', icon: '✗', title: `Does not hold${where}${r.why ? ': ' + r.why : ''}` };
-  if (claim === 'eq' && r.rel === 'prop') return { cls: 'warn', icon: '≈', title: `Only equal up to a scalar${where} — write ∝, or fix the scalar` };
-  return { cls: 'ok', icon: '✓', title: `Holds${where}${r.rel === 'eq' ? ': equal' : ': equal up to a scalar'}` };
+  const need = r.factorText ? `the scalar after “=” should be ${r.factorText}` : r.factorVaries ? 'the scalar depends on the symbols' : '';
+  if (r.rel === 'ne') return { cls: 'bad', icon: '✗', title: `Does not hold${where}${r.why ? ': ' + r.why : ''}`, r };
+  if (claim === 'eq' && r.rel === 'prop') return { cls: 'warn', icon: '≈', title: `Only equal up to a scalar${where}${need ? ': ' + need : ''}. Click the relation to fix it.`, r };
+  return { cls: 'ok', icon: '✓', title: `Holds${where}${r.rel === 'eq' ? (r.scaled ? ': equal with the scalar written' : ': equal') : `: equal up to a scalar${need ? ' (' + need + ')' : ''}`}`, r };
 }
 function sepBadge(i) {
   if (!liveCheck || !doc.diagrams[i + 1]) return '';
@@ -3541,7 +4116,7 @@ function runChecks() {
     const k = checkKey(i);
     if (checkCache.has(k)) continue;
     checkBusy = k;
-    simJob('relationCheck', [doc.diagrams[i], doc.diagrams[i + 1], { check: matState.check, values: matState.vals }], 'bg')
+    simJob('relationCheck', [doc.diagrams[i], doc.diagrams[i + 1], { check: matState.check, values: matState.vals, sep: sepOf(i), prevSep: i > 0 ? sepOf(i - 1) : '' }], 'bg')
       .then((C) => checkFrom(i, C), (e) => ({ cls: 'err', icon: '?', title: e.message, nodes: e.nodes }))
       .then((res) => { checkBusy = null; checkCache.set(k, res); render(); });   // render() queues the next one
     return;
@@ -3573,7 +4148,7 @@ function openCheck() {
       <label class="switch"><input type="checkbox" data-s="live"${liveCheck ? ' checked' : ''}><span class="track"></span><span>Show ✓ / ≈ / ✗ on every relation</span></label>
       ${anySym ? `<div class="seg" data-seg="lcheck"><button data-s="lc" data-v="all" class="${matState.check === 'all' ? 'on' : ''}">For all values</button><button data-s="lc" data-v="current" class="${matState.check === 'current' ? 'on' : ''}">At these values</button></div>` : ''}
       ${anySym && matState.check === 'current' ? `<div class="msyms">${syms.reals.map((k) => `<label class="msym">${tex(k)}<span>=</span><input type="number" step="0.05" data-s="lv" data-k="${esc(k)}" value="${matState.vals[k]}"><span class="muted">π</span></label>`).join('')}
-        ${syms.bools.map((k) => `<span class="msym">${tex(k)}<span>=</span><div class="seg sm" data-seg="lb-${esc(k)}">${[0, 1].map((v) => `<button data-s="lb" data-k="${esc(k)}" data-v="${v}" class="${matState.vals[k] === v ? 'on' : ''}">${v}</button>`).join('')}</div></span>`).join('')}</div>` : ''}
+        ${syms.bools.map((k) => `<span class="msym">${boolName(k)}<span>=</span><div class="seg sm" data-seg="lb-${esc(k)}">${[0, 1].map((v) => `<button data-s="lb" data-k="${esc(k)}" data-v="${v}" class="${matState.vals[k] === v ? 'on' : ''}">${boolVal(k, v)}</button>`).join('')}</div></span>`).join('')}</div>` : ''}
       <div class="legend"><span><i class="ok">${MARK.ok}</i>holds as written</span><span><i class="warn">${MARK.warn}</i>written “=”, only equal up to a scalar</span><span><i class="bad">${MARK.bad}</i>does not hold</span></div>`;
   };
   const btn = $('#btnCheck');
@@ -3703,7 +4278,7 @@ function renameTab(i) {
   inp.closest('.tab').classList.add('renaming');
   requestAnimationFrame(() => requestAnimationFrame(grow));
   inp.addEventListener('input', grow);
-  inp.focus(); inp.select();
+  inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length);   // caret at the end, no highlight
   let done = false;
   const end = (ok) => {
     if (done) return; done = true;
@@ -3720,6 +4295,8 @@ let tabDrag = null;
 tabsEl.addEventListener('pointerdown', (e) => {
   const tab = e.target.closest('.tab');
   if (!tab || e.target.closest('.tx,.tren,.tconf') || e.button !== 0) return;
+  e.preventDefault();   // no text selection while dragging a tab
+  if (document.activeElement && document.activeElement.classList.contains('tren')) document.activeElement.blur();
   tabDrag = { i: +tab.dataset.tab, x0: e.clientX, moved: false };
   try { tabsEl.setPointerCapture(e.pointerId); } catch (_) {}
 });
@@ -3908,7 +4485,7 @@ function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.ad
 function initChrome() {
   $('#btnTidy').innerHTML = I.tidy; $('#btnPreview').innerHTML = I.eye; $('#btnHelp').innerHTML = I.help; $('#btnNew').innerHTML = I.folder;
   $('#btnImport .bi').innerHTML = I.up; $('#btnExport .bi').innerHTML = I.down;
-  $('.tool[data-tool="select"] .ti').innerHTML = I.pointer; $('.tool[data-tool="T"] .ti').innerHTML = I.text; $('.tool[data-tool="P"] .ti').innerHTML = I.dot; $('.tool[data-tool="M"] .ti').innerHTML = I.marrow; $('.tool[data-tool="edge"] .ti').innerHTML = I.wire;
+  $('.tool[data-tool="select"] .ti').innerHTML = I.pointer; $('.tool[data-tool="T"] .ti').innerHTML = I.text; $('.tool[data-tool="P"] .ti').innerHTML = I.dot; $('.tool[data-tool="M"] .ti').innerHTML = I.marrow; $('.tool[data-tool="B"] .ti').innerHTML = I.gbox; $('.tool[data-tool="edge"] .ti').innerHTML = I.wire;
   $('#dUndo').innerHTML = I.undo; $('#dRedo').innerHTML = I.redo; $('#dDel').innerHTML = I.trash;
   $('#btnTidy').onclick = tidyAll;
   $('#btnSimp .bi').innerHTML = I.wand; $('#btnMat .bi').innerHTML = I.matrix; $('#btnCheck .bi').innerHTML = I.okc;
@@ -3927,7 +4504,8 @@ function initChrome() {
   $('#btnImport').onclick = () => openImport();
   $('#btnExport').onclick = () => openExport();
   $('#dUndo').onclick = undo; $('#dRedo').onclick = redo; $('#dDel').onclick = deleteSel;
-  document.querySelectorAll('.tool[data-tool]').forEach((b) => { b.onclick = () => { const was = tool; setTool(b.dataset.tool); b.blur(); if (b.dataset.tool === 'select' && was === 'select') togglePickPop(b); }; });
+  document.querySelectorAll('.tool[data-tool]').forEach((b) => { b.onclick = () => { const was = tool; setTool(b.dataset.tool); b.blur(); if (b.dataset.tool === 'select' && was === 'select') togglePickPop(b); if (b.dataset.tool === 'edge' && was === 'edge') toggleWirePop(b); }; });
+{ const eb = document.querySelector('.tool[data-tool="edge"]'); eb.addEventListener('contextmenu', (e) => { e.preventDefault(); if (tool !== 'edge') setTool('edge'); openWirePop(eb); }); syncWireMode(); }
 { const vb = document.querySelector('.tool[data-tool="select"]'); vb.addEventListener('contextmenu', (e) => { e.preventDefault(); if (tool !== 'select') setTool('select'); openPickPop(vb); }); }
   // drop a .tex file anywhere
   window.addEventListener('dragover', (e) => e.preventDefault());
@@ -4233,7 +4811,7 @@ function drawShow(from, to, t) {
   const B = doc.diagrams[show.list[to]], gB = slideGeo(B);
   const W = innerWidth / 2, H = innerHeight / 2 + 18;
   const S = [], N = [];
-  const wire = (dd, e, A0, B0, P, op) => { const g = rawGeom(dd, e, A0, B0, P); S.push(`<path d="${g.d}" class="show-wire" style="opacity:${op.toFixed(3)}"/>`); if (g.h) S.push(`<rect class="show-h" x="${g.m.x - 7}" y="${g.m.y - 7}" width="14" height="14" style="opacity:${op.toFixed(3)}"/>`); };
+  const wire = (dd, e, A0, B0, P, op) => { const g = edgeGeom(dd, e, A0, B0, P); S.push(`<path d="${g.d}" class="show-wire${g.h ? ' hedge-p' : ''}" style="opacity:${op.toFixed(3)}"/>`); };
   let k = gB.k;
   if (from == null || from === to || t >= 1) {
     const P = (dd, n) => gB.ps.get(n.id);
@@ -4290,7 +4868,7 @@ function pairItemHTML(it, y, op, dx = 0) {
   if (it.rel != null) return `<div class="show-prel" style="left:${(it.x + dx).toFixed(1)}px;top:${y}px;opacity:${op.toFixed(3)}">${tex(it.rel)}</div>`;
   const d = doc.diagrams[show.list[it.j]], P = (dd, n) => it.g.ps.get(n.id), S = [], N = [];
   const byId = new Map(d.nodes.map((n) => [n.id, n]));
-  d.edges.forEach((e) => { const a = byId.get(e.a), b = byId.get(e.b); if (!a || !b) return; const g = rawGeom(d, e, a, b, P); S.push(`<path d="${g.d}" class="show-wire"/>`); if (g.h) S.push(`<rect class="show-h" x="${g.m.x - 7}" y="${g.m.y - 7}" width="14" height="14"/>`); });
+  d.edges.forEach((e) => { const a = byId.get(e.a), b = byId.get(e.b); if (!a || !b) return; const g = edgeGeom(d, e, a, b, P); S.push(`<path d="${g.d}" class="show-wire${g.h ? ' hedge-p' : ''}"/>`); });
   d.nodes.forEach((n) => N.push(nodeHTML(n, it.g.ps.get(n.id), false)));
   return `<div class="show-world" style="transform:translate(${(it.x + dx).toFixed(1)}px,${y}px) scale(${it.k.toFixed(4)});opacity:${op.toFixed(3)}"><svg class="show-svg" overflow="visible" width="1" height="1">${S.join('')}</svg>${N.join('')}</div>`;
 }
@@ -4514,6 +5092,7 @@ function syncGrid() {
   const b = $('#btnGrid');
   if (b) { b.classList.toggle('on', gridOn); b.setAttribute('aria-checked', gridOn ? 'true' : 'false'); }
   vp.classList.toggle('nogrid', !gridOn);
+  applyCam();
 }
 // Grid back on: spread each axis just enough that every node lands on a whole cell. Order, rows and
 // columns stay as they are; a half step becomes one cell, longer gaps keep their (rounded) length.
@@ -4538,7 +5117,7 @@ function setGrid(on) {
 function toggleGrid() {
   setGrid(!gridOn);
   const widened = snapPageToGrid();
-  toast(gridOn ? (widened ? 'Grid on: widened so every node sits on a cell' : 'Grid on: nodes snap to whole cells') : 'Grid off: nodes can also sit half way between cells');
+  toast(gridOn ? (widened ? 'Grid: widened so every node sits on a cell' : 'Grid: nodes snap to whole cells') : 'Half grid: nodes can also sit half way between cells');
 }
 $('#btnGrid').onclick = (e) => { e.currentTarget.blur(); toggleGrid(); };
 syncGrid();
@@ -4674,17 +5253,65 @@ window.addEventListener('blur', () => setNb(false));
 // ---------- what box-select picks (click V again, or right-click it) ----------
 const PICK_KEY = 'zx-draw-pick-v1';
 const PICKS = [['Z', 'Z spiders', '<span class="sw Z"></span>'], ['X', 'X spiders', '<span class="sw X"></span>'], ['H', 'H boxes', '<span class="sw H"></span>'],
-  ['pt', 'Wire points & dots', '<span class="sw N"></span>'], ['T', 'Text cells', '<span class="pk-t">⋮</span>'], ['M', 'Matrix arrows', '<span class="pk-m"></span>'], ['wire', 'Wires', '<span class="pk-w"></span>']];
+  ['pt', 'Wire points & dots', '<span class="sw N"></span>'], ['T', 'Text cells', '<span class="pk-t">⋮</span>'], ['M', 'Matrix arrows', '<span class="pk-m"></span>'], ['wire', 'Wires', '<span class="pk-w"></span>'], ['hw', 'Hadamard edges', '<span class="pk-w h"></span>']];
+const edgePicked = (e) => selPick[ZX.splitOpts(e.o || '').includes('H') ? 'hw' : 'wire'] !== false;
 const pickKind = (t) => (t === 'N' || t === 'P' ? 'pt' : t);
 let selPick = {};
 try { selPick = JSON.parse(localStorage.getItem(PICK_KEY) || '{}') || {}; } catch (_) {}
+// ---------- wire tool kinds: plain wire or Hadamard edge (click E again, or right-click it) ----------
+const WIRE_KINDS = [['', 'Wire', 'Plain wire'], ['H', 'Hadamard edge', 'A wire with a Hadamard on it']];
+const wireKindIcon = (h) => `<svg width="26" height="14" viewBox="0 0 26 14"><path d="M4 7H22" class="wk-line${h ? ' h' : ''}"/><circle cx="4" cy="7" r="2.6" class="wk-end"/><circle cx="22" cy="7" r="2.6" class="wk-end"/></svg>`;
+function syncWireMode() { const b = document.querySelector('.tool[data-tool="edge"]'); if (b) { b.classList.toggle('hmode', wireMode === 'H'); b.title = `${wireMode === 'H' ? 'Hadamard edge' : 'Wire'}: drag between nodes or cells (E) — click again for the kind`; } }
+function setWireMode(m) {
+  wireMode = m; syncWireMode();
+  try { localStorage.setItem(WIRE_KEY, m); } catch (_) {}
+}
+let wireEl = null;
+function closeWirePop() { if (!wireEl) return; const el = wireEl; wireEl = null; el.classList.remove('show'); setTimeout(() => el.remove(), 180); }
+function toggleWirePop(b) { wireEl ? closeWirePop() : openWirePop(b); }
+function openWirePop(b) {
+  closeWirePop(); closePickPop(); closeCtx();
+  const el = document.createElement('div');
+  const side = dockPhone() ? 'bottom' : dockSide;
+  el.className = 'pickpop wirepop' + (side === 'bottom' ? ' row' : '');
+  el.innerHTML = WIRE_KINDS.map(([v, l]) => `<button class="wk${v === wireMode ? ' on' : ''}" data-v="${v}" aria-label="${l}" data-tip="${l}">${wireKindIcon(v === 'H')}</button>`).join('');
+  el.addEventListener('click', (e) => {
+    const k = e.target.closest('.wk'); if (!k) return;
+    el.querySelectorAll('.wk').forEach((x) => x.classList.toggle('on', x === k));
+    setWireMode(k.dataset.v);
+    setTimeout(closeWirePop, 140);
+  });
+  el.addEventListener('contextmenu', (e) => e.preventDefault());
+  document.body.appendChild(el);
+  const r = b.getBoundingClientRect(), w = el.offsetWidth, h = el.offsetHeight, gap = 10;
+  let x, y;
+  if (side === 'left') { x = r.right + gap; y = r.top + r.height / 2 - h / 2; }
+  else if (side === 'right') { x = r.left - gap - w; y = r.top + r.height / 2 - h / 2; }
+  else { x = r.left + r.width / 2 - w / 2; y = r.top - gap - h; }
+  x = Math.max(8, Math.min(innerWidth - w - 8, x)); y = Math.max(8, Math.min(innerHeight - h - 8, y));
+  Object.assign(el.style, { left: x + 'px', top: y + 'px', transformOrigin: `${r.left + r.width / 2 - x}px ${r.top + r.height / 2 - y}px` });
+  el.dataset.side = side;
+  requestAnimationFrame(() => el.classList.add('show'));
+  wireEl = el;
+}
+document.addEventListener('pointerdown', (e) => { if (wireEl && !wireEl.contains(e.target) && !e.target.closest('.tool[data-tool="edge"]')) closeWirePop(); }, true);
+document.addEventListener('keydown', (e) => { if (wireEl && e.key === 'Escape') { e.stopImmediatePropagation(); closeWirePop(); } }, true);
+// H with wires selected: each one flips between plain wire and Hadamard edge. Returns false when no wire is selected.
+function toggleHEdges() {
+  const es = [...sel].map(findEdge).filter(Boolean);
+  if (!es.length || lockedStop()) return !!es.length;
+  const to = es.filter(({ e }) => !ZX.splitOpts(e.o || '').includes('H')).length;
+  mutate(() => es.forEach(({ e }) => toggleTok(e, 'H')));
+  toast(to === es.length ? `Hadamard edge${es.length > 1 ? 's' : ''}` : to ? `Flipped ${es.length} wires` : `Plain wire${es.length > 1 ? 's' : ''}`);
+  return true;
+}
 let pickEl = null;
 const pickAll = () => PICKS.every(([k]) => selPick[k] !== false);
 function syncPickDot() { const vb = document.querySelector('.tool[data-tool="select"]'); if (vb) vb.classList.toggle('filt', !pickAll()); }
 function closePickPop() { if (!pickEl) return; const el = pickEl; pickEl = null; el.classList.remove('show'); setTimeout(() => el.remove(), 180); }
 function togglePickPop(b) { pickEl ? closePickPop() : openPickPop(b); }
 function openPickPop(b) {
-  closePickPop(); closeCtx();
+  closePickPop(); closeWirePop(); closeCtx();
   const el = document.createElement('div');
   el.className = 'pickpop';
   const draw = () => {

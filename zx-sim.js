@@ -51,126 +51,206 @@
   const pNeedM = (p) => (pConst(p) ? 2 * p.pi[1] : Infinity);
   function pValue(p, vals) {             // radians
     let v = Math.PI * p.pi[0] / p.pi[1] + p.rad;
-    for (const k in p.sym) { const base = symBase(k); v += Math.PI * (p.sym[k][0] / p.sym[k][1]) * (vals && base in vals ? vals[base] : 0); }
+    for (const k in p.sym) v += Math.PI * (p.sym[k][0] / p.sym[k][1]) * symBases(k).reduce((x, b) => x * (vals && b in vals ? vals[b] : 0), 1);
     return v;
   }
   const symBase = (k) => k.replace(/\\pi$/, '');
+  const symBases = (k) => symBase(k).split(' ');   // "a b\pi" = a·b·π, a product of 0/1 variables
   // Put numbers in for symbols. Whole numbers stay exact (aπ with a = 1 is exactly π).
   function pSubst(p, vals) {
     if (!vals) return p;
     let r = { pi: p.pi.slice(), sym: {}, rad: p.rad };
     for (const k in p.sym) {
-      const b = symBase(k), q = p.sym[k];
-      if (!(b in vals)) { r.sym[k] = q; continue; }
-      const v = vals[b];
+      const bs = symBases(k), q = p.sym[k];
+      const known = bs.filter((b) => b in vals), rest = bs.filter((b) => !(b in vals));
+      if (!known.length) { r.sym[k] = q; continue; }
+      const v = known.reduce((x, b) => x * vals[b], 1);
+      if (rest.length) {   // some of the 0/1 variables known: a·b·π with a = 1 is b·π
+        if (v === 0) continue;
+        const k2 = rest.join(' ') + (k.endsWith('\\pi') ? '\\pi' : '');
+        if (Math.abs(v - Math.round(v)) < 1e-12) put2(r.sym, k2, qmul(q, [Math.round(v), 1])); else r.sym[k2] = q;   // (non-0/1 value: leave symbolic)
+        continue;
+      }
       const v4 = Math.round(v * 4);
       if (Math.abs(v * 4 - v4) < 1e-9) r.pi = qadd(r.pi, qmul(q, Q(v4, 4)));   // multiples of π/4 stay exact
       else r.rad += Math.PI * v * q[0] / q[1];
     }
     return pNorm(r);
   }
-  function pSymbols(p) { return Object.keys(p.sym).map(symBase); }
+  function pSymbols(p) { return [...new Set(Object.keys(p.sym).flatMap(symBases))]; }
   // Symbols only ever written as "aπ" are 0/1 variables (the usual ZX convention for basis states).
   function boolSymbols(phs) {
     const withPi = new Set(), plain = new Set();
-    phs.forEach((p) => Object.keys(p.sym).forEach((k) => (k.endsWith('\\pi') ? withPi : plain).add(symBase(k))));
+    phs.forEach((p) => Object.keys(p.sym).forEach((k) => symBases(k).forEach((b) => (k.endsWith('\\pi') ? withPi : plain).add(b))));
     return [...withPi].filter((k) => !plain.has(k));
   }
 
-  // Parse a phase written in LaTeX: \pi, \frac{\pi}{2}, -\frac{3\pi}{4}, \alpha+\beta, a\pi, 2\alpha, \pi/2 …
+  // Parse a phase written in LaTeX: \pi, \frac{\pi}{2}, \frac\pi2, -\frac{3\pi}{4}, \alpha+\beta, a\pi, 2\alpha, \pi/2,
+  // a\cdot\frac{\pi}{2}, (a+b)\pi, (1-a)\pi, ab\pi, (a\oplus b)\frac{\pi}{2}, \neg a\pi, \bar{a}\pi, \frac{\pi}{2^3}, π/2 …
+  // The text is read as a polynomial in π and the symbols, then each term must be one of:
+  //   number (a multiple of π, as in PyZX: 1/2 = π/2), number·π, number·α (an angle in units of π),
+  //   number·a·b·…·π (a, b … are 0/1 variables; a product of 0/1 variables is again 0/1).
+  const MAX_TERMS = 4096;
   function parsePhase(src) {
-    let s = String(src || '').replace(/\\(left|right|,|;|!|quad)/g, ' ').replace(/\\cdot|\\times/g, '*').trim();
+    let s = String(src || '');
+    if (ZX && ZX.unicodeToTex) s = ZX.unicodeToTex(s);
+    s = s.replace(/(^|[^\\A-Za-z])pi(?![A-Za-z])/g, '$1\\pi ');   // bare “pi” = π
+    s = s.replace(/±/g, '\\pm ').replace(/∓/g, '\\mp ').replace(/¬/g, '\\neg ').replace(/\\(left|right|big|Big|bigg|Bigg)\b/g, ' ').replace(/\\(,|;|!|:|quad|qquad)/g, ' ')
+      .replace(/\\cdot|\\times|\\ast/g, '*').replace(/\\lbrack/g, '[').replace(/\\rbrack/g, ']').replace(/\\(lbrace|\{)/g, '(').replace(/\\(rbrace|\})/g, ')')
+      .replace(/\\(xor|veebar)\b/g, '\\oplus').replace(/\\(lnot)\b/g, '\\neg').trim();
     if (!s) return P0();
     let i = 0;
-    const peek = () => { while (s[i] === ' ') i++; return s[i]; };
+    const peek = () => { while (s[i] === ' ' || s[i] === '\t' || s[i] === '\n') i++; return s[i]; };
     const fail = (m) => { throw new Error(`Can't read the phase “${src}”${m ? ': ' + m : ''}`); };
-    // value = { c: Q constant, p: phase-linear-form } ; product allowed only when one side is a pure constant
-    const K = (q) => ({ c: q, p: null });
-    const isK = (v) => v.p === null;
-    const toP = (v) => (isK(v) ? { pi: v.c, sym: {}, rad: 0 } : v.p);   // a plain number is a multiple of π
-    const add = (a, b) => {
-      if (isK(a) && isK(b)) return K(qadd(a.c, b.c));
-      if (isK(a) && qzero(a.c)) return b;
-      if (isK(b) && qzero(b.c)) return a;
-      return { c: null, p: pAdd(toP(a), toP(b)) };
-    };
+    // polynomial: Map(monomial key → Q); a monomial key is its atoms sorted and joined by '|', '' = constant
+    const PI = '\\pi';
+    const K = (q) => new Map(qzero(q) ? [] : [['', q]]);
+    const atom = (a) => new Map([[a, [1, 1]]]);
+    const constOf = (v) => (v.size === 0 ? [0, 1] : v.size === 1 && v.has('') ? v.get('') : null);
+    const put = (m, k, q) => { const r = m.has(k) ? qadd(m.get(k), q) : q; if (qzero(r)) m.delete(k); else m.set(k, r); };
+    const add = (a, b) => { const r = new Map(a); b.forEach((q, k) => put(r, k, q)); return r; };
+    const scale = (a, q) => { const r = new Map(); if (!qzero(q)) a.forEach((v, k) => r.set(k, qmul(v, q))); return r; };
+    const neg = (a) => scale(a, [-1, 1]);
+    const mkey = (x, y) => (x && y ? (x + '|' + y).split('|').sort().join('|') : x || y);
     const mul = (a, b) => {
-      if (isK(a) && isK(b)) return K(qmul(a.c, b.c));
-      if (isK(a)) return { c: null, p: pScale(b.p, a.c) };
-      if (isK(b)) return { c: null, p: pScale(a.p, b.c) };
-      // symbol × π  (e.g. aπ): a symbol measured in π
-      const pa = a.p, pb = b.p;
-      const sym = (x) => Object.keys(x.sym).length === 1 && qzero(x.pi) && !x.rad;
-      if (sym(pa) && pIsPi(pb)) return { c: null, p: symTimesPi(pa) };
-      if (sym(pb) && pIsPi(pa)) return { c: null, p: symTimesPi(pb) };
-      return fail('only linear phases are supported');
+      const r = new Map();
+      a.forEach((qa, ka) => b.forEach((qb, kb) => put(r, mkey(ka, kb), qmul(qa, qb))));
+      if (r.size > MAX_TERMS) fail('too long');
+      return r;
     };
-    const symTimesPi = (x) => { const k = Object.keys(x.sym)[0]; return { pi: [0, 1], sym: { [k + '\\pi']: x.sym[k] }, rad: 0 }; };
-    const group = () => {
-      if (peek() !== '{') fail('expected {');
-      let depth = 0, j = i;
-      for (; j < s.length; j++) { if (s[j] === '{') depth++; else if (s[j] === '}' && --depth === 0) break; }
-      const inner = s.slice(i + 1, j); i = j + 1;
-      return parseExpr(inner);
+    const pow = (a, e) => {
+      const n = constOf(e);
+      if (!n || n[1] !== 1) fail('powers must be whole numbers');
+      const c = constOf(a);
+      if (n[0] < 0) { if (!c || qzero(c)) fail('only numbers can have negative powers'); return K(Q(c[1] ** -n[0], c[0] ** -n[0])); }
+      if (n[0] > 64) fail('power too large');
+      let r = K([1, 1]);
+      for (let k = 0; k < n[0]; k++) r = mul(r, a);
+      return r;
     };
-    function parseExpr(t) {
-      const save = [s, i]; s = t; i = 0;
+    const div = (a, b) => { const c = constOf(b); if (!c || qzero(c)) fail('you can only divide by a non-zero number'); return scale(a, Q(c[1], c[0])); };
+    const not = (a) => add(K([1, 1]), neg(a));                         // ¬a = 1 − a
+    const xor = (a, b) => add(add(a, b), scale(mul(a, b), [-2, 1]));   // a ⊕ b = a + b − 2ab
+    // ± / ∓: one shared sign. A 0/1 symbol \pm (0 = upper sign, 1 = lower): ± = 1 − 2·pm, ∓ = 2·pm − 1,
+    // so ∓ is always the opposite of ± in the same diagram and relation.
+    const PMKEY = '\\pm';
+    const isPM = () => /^\\(pm|mp)(?![A-Za-z])/.exec(s.slice(i));
+    const sgn = (name) => { const v = add(K([1, 1]), scale(atom(PMKEY), [-2, 1])); return name === 'mp' ? neg(v) : v; };
+    // one TeX argument: {…}, a command (\pi) or a single character (\frac12)
+    function arg() {
+      const c = peek();
+      if (c === undefined) fail('missing argument');
+      if (c === '{') return group();
+      if (c === '\\') { const m = /^\\([A-Za-z]+)/.exec(s.slice(i)); if (!m) fail(); i += m[0].length; return command(m[1]); }
+      i++;
+      return sub(c);
+    }
+    function argText() {   // raw text of an argument, for names like \vec{a}
+      const c = peek();
+      if (c === '{') { const j = close(i, '{', '}'); const t = s.slice(i + 1, j); i = j + 1; return t.replace(/\s+/g, ''); }
+      if (c === '\\') { const m = /^\\([A-Za-z]+)/.exec(s.slice(i)); i += m[0].length; return m[0]; }
+      i++; return c;
+    }
+    function close(j, o, c) {
+      let depth = 0;
+      for (; j < s.length; j++) { if (s[j] === o) depth++; else if (s[j] === c && --depth === 0) return j; }
+      return fail(`missing ${c}`);
+    }
+    function group() { const j = close(i, '{', '}'); const inner = s.slice(i + 1, j); i = j + 1; return sub(inner); }
+    function sub(t) { const save = [s, i]; s = t; i = 0; const v = parseExpr(); [s, i] = save; return v; }
+    function parseExpr() {
       let v = term();
       while (true) {
         const c = peek();
-        if (c === '+') { i++; v = add(v, term()); } else if (c === '-') { i++; v = add(v, neg(term())); } else break;
+        if (c === '+') { i++; v = add(v, term()); }
+        else if (c === '-') { i++; v = add(v, neg(term())); }
+        else if (s.startsWith('\\oplus', i)) { i += 6; v = xor(v, term()); }
+        else if (isPM()) { const m = isPM(); i += m[0].length; v = add(v, mul(sgn(m[1]), term())); }
+        else break;
       }
       if (peek() !== undefined) fail(`unexpected “${s.slice(i)}”`);
-      [s, i] = save;
       return v;
     }
-    const neg = (v) => (isK(v) ? K(qneg(v.c)) : { c: null, p: pScale(v.p, [-1, 1]) });
     function term() {
       let v = null;
       while (true) {
         const c = peek();
-        if (c === undefined || c === '+' || c === '-' && v !== null || c === ')' ) break;
-        if (c === '-' && v === null) { i++; v = neg(factor()); continue; }
-        if (c === '*') { i++; continue; }
-        if (c === '/') { i++; const d = factor(); if (!isK(d) || qzero(d.c)) fail('divide by a number'); v = mul(v, K(Q(d.c[1], d.c[0]))); continue; }
-        const f = factor();
+        if (c === undefined || c === '+' || (c === '-' && v !== null) || c === ')' || c === ']' || s.startsWith('\\oplus', i)) break;
+        if (c === '-' && v === null) { i++; v = neg(power()); continue; }
+        if (c === '\\' && isPM()) { if (v !== null) break; const m = isPM(); i += m[0].length; v = mul(sgn(m[1]), power()); continue; }
+        if (c === '*') { if (v === null) fail(); i++; continue; }
+        if (c === '/') { if (v === null) fail(); i++; v = div(v, power()); continue; }
+        const f = power();
         v = v === null ? f : mul(v, f);
       }
       if (v === null) fail();
       return v;
     }
+    function power() {
+      let v = factor();
+      while (peek() === '^') { i++; v = pow(v, arg()); }
+      return v;
+    }
     function factor() {
       const c = peek();
-      if (c === '(') { i++; let depth = 1, j = i; for (; j < s.length; j++) { if (s[j] === '(') depth++; else if (s[j] === ')' && --depth === 0) break; } const inner = s.slice(i, j); i = j + 1; return parseExpr(inner); }
+      if (c === '(' || c === '[') {
+        const j = close(i, c, c === '(' ? ')' : ']');
+        const inner = s.slice(i + 1, j); i = j + 1;
+        return sub(inner);
+      }
       if (c === '{') return group();
       if (/[0-9.]/.test(c)) {
-        const m = /^[0-9]*\.?[0-9]+/.exec(s.slice(i)); i += m[0].length;
+        const m = /^[0-9]*\.?[0-9]+/.exec(s.slice(i)); if (!m) fail(); i += m[0].length;
         const str = m[0];
         if (str.includes('.')) { const dp = str.split('.')[1].length; return K(Q(Math.round(+str * 10 ** dp), 10 ** dp)); }
         return K([+str, 1]);
       }
       if (c === '\\') {
-        const m = /^\\([A-Za-z]+)/.exec(s.slice(i)); if (!m) fail();
+        const m = /^\\([A-Za-z]+)/.exec(s.slice(i)); if (!m) fail(`unexpected “${s.slice(i, i + 2)}”`);
         i += m[0].length;
-        const name = m[1];
-        if (name === 'pi') return { c: null, p: { pi: [1, 1], sym: {}, rad: 0 } };
-        if (name === 'frac' || name === 'dfrac' || name === 'tfrac') { const a = group(), b = group(); if (!isK(b) || qzero(b.c)) fail('denominator must be a number'); return mul(a, K(Q(b.c[1], b.c[0]))); }
-        if (name === 'mathrm' || name === 'text' || name === 'mathbf') return group();
-        return symbol('\\' + name);
+        return command(m[1]);
       }
       if (/[A-Za-z]/.test(c)) { i++; return symbol(c); }
       return fail(`unexpected “${c}”`);
     }
-    function symbol(name) {
-      // optional subscript: \alpha_1, a_{12}
-      if (s[i] === '_') { i++; if (s[i] === '{') { const j = s.indexOf('}', i); name += '_{' + s.slice(i + 1, j) + '}'; i = j + 1; } else { name += '_' + s[i]; i++; } }
-      return { c: null, p: { pi: [0, 1], sym: { [name]: [1, 1] }, rad: 0 } };
+    function command(name) {
+      if (name === 'pi') return atom(PI);
+      if (name === 'frac' || name === 'dfrac' || name === 'tfrac' || name === 'cfrac') { const a = arg(), b = arg(); return div(a, b); }
+      if (name === 'neg') return not(power());
+      if (name === 'bar' || name === 'overline') return not(arg());
+      if (/^(mathrm|text|textrm|mathit|mathbf|mathsf|mathnormal|boldsymbol|bm|operatorname|ensuremath)$/.test(name)) {
+        const save = i; const t = argText();
+        if (/^[A-Za-z]+$/.test(t) && t.length > 1 && name !== 'ensuremath') return symbol(t);   // \mathrm{in}: one name
+        i = save; return arg();
+      }
+      if (/^(vec|hat|tilde|dot|ddot|check|breve|acute|grave|underline|widehat|widetilde)$/.test(name)) return symbol(`\\${name}{${argText()}}`);
+      if (name === 'sqrt' || name === 'log' || name === 'ln' || name === 'sin' || name === 'cos' || name === 'exp' || name === 'arctan') fail(`\\${name} is not a phase the calculator can work with`);
+      if (name === 'Pi') fail('use \\pi');
+      return symbol('\\' + name);
     }
-    const v = parseExpr(s);
-    // Phases without π are read in units of π, as in PyZX / ZXLive: 1/2 means π/2
-    if (isK(v)) return pNorm({ pi: v.c, sym: {}, rad: 0 });
-    return pNorm(v.p);
+    function symbol(name) {
+      // optional subscript (\alpha_1, a_{12}) and prime (a')
+      if (s[i] === '_') { i++; if (s[i] === '{') { const j = close(i, '{', '}'); name += '_{' + s.slice(i + 1, j).replace(/\s+/g, '') + '}'; i = j + 1; } else if (s[i] === '\\') { const m = /^\\[A-Za-z]+/.exec(s.slice(i)); name += '_{' + m[0] + '}'; i += m[0].length; } else { name += '_' + s[i]; i++; } }
+      while (s[i] === "'") { name += "'"; i++; }
+      return atom(name);
+    }
+    const v = parseExpr();
+    // the polynomial → linear form
+    const out = P0();
+    v.forEach((q, key) => {
+      const atoms = key ? key.split('|') : [];
+      const pis = atoms.filter((a) => a === PI).length;
+      const syms = [...new Set(atoms.filter((a) => a !== PI))].sort();
+      if (pis > 1) fail('π appears more than once in one term');
+      if (pis === 1 && !syms.length) { out.pi = qadd(out.pi, q); return; }
+      if (pis === 0 && !syms.length) { out.pi = qadd(out.pi, q); return; }   // plain number = multiple of π
+      if (pis === 0 && syms.length === 1 && atoms.length === 1) { put2(out.sym, syms[0], q); return; }
+      if (pis === 1) { put2(out.sym, syms.join(' ') + PI, q); return; }        // 0/1 variables (a·a = a)
+      fail('a product of angles is not a phase; write 0/1 variables with π, e.g. ab\\pi');
+    });
+    return pNorm(out);
   }
+  function put2(o, k, q) { const r = o[k] ? qadd(o[k], q) : q; if (qzero(r)) delete o[k]; else o[k] = r; }
   function qTex(q, unit) {   // q·unit as LaTeX, sign handled by caller (q > 0)
     const [n, d] = q;
     const num = (n === 1 ? '' : String(n)) + unit;
@@ -190,10 +270,51 @@
   // ---------- the diagram as a graph ----------
   const WIRE_CMDS = new Set(['', 'N', 'None', 'NoneDouble']);
   const hasH = (e) => ZX.splitOpts(e.o || '').includes('H');
+
+  // Boxes: I, X, Y, Z with a wire left and right are the Paulis; with a third wire on top (or below) they are
+  // the controlled forms (I = 1/√2 · X state on the third wire, X = H Z H, Y = X(π/2) Z X(−π/2), Z = Z spider).
+  // Any other box has no fixed meaning. Scalars are written as spider pairs: 1/√2 = Z ≡ X (3 wires), 1 + i = Z(π/2).
+  const boxName = (l) => (l || '').replace(/\\(?:mathrm|mathsf|textsf|text|mathit|mathbf|operatorname)\s*/g, '').replace(/[{}\s$]/g, '');
+  function expandBoxes(d) {
+    if (!d.nodes.some((n) => n.t === 'B')) return d;
+    const c = { ...d, nodes: d.nodes.slice(), edges: d.edges.map((e) => ({ ...e })) };
+    let k = 0;
+    const nid = () => '_bx' + (k++) + ZX.newId('n');
+    d.nodes.filter((n) => n.t === 'B').forEach((n) => {
+      const g = ZX.boxGeom(d, n), S = g.sides, nm = boxName(n.label);
+      const cnt = (s) => S[s].length;
+      const lr = cnt('L') === 1 && cnt('R') === 1, ex = cnt('T') + cnt('B');
+      if (!/^[IXYZ]$/.test(nm) || !lr || ex > 1 || c.edges.some((e) => e.a === n.id && e.b === n.id))
+        throw nodeErr(nm && !/^[IXYZ]$/.test(nm) ? `A box “${n.label}” has no fixed meaning here — only I, X, Y, Z boxes can be computed` : 'A Pauli box needs one wire left, one right, and at most one on top or below', n);
+      const mk = (t, label, dc, dr) => { const m = { id: nid(), r: n.r + (dr || 0), c: n.c + (dc || 0), t, label: label || '', cmd: '', v: '', st: '' }; c.nodes.push(m); return m; };
+      const wire = (a, b, o) => c.edges.push({ id: nid(), a: a.id, b: b.id, o: o || '' });
+      const relink = (x, to) => { const e = c.edges.find((f) => f.id === x.e); e[x.end] = to.id; };
+      const scal = (kind) => {   // free scalar diagrams
+        if (kind === 'rt') { const z = mk('Z', '', 0, 0.4), x = mk('X', '', 0.2, 0.4); wire(z, x); wire(z, x); wire(z, x); }
+        else mk('Z', '\\frac{\\pi}{2}', 0, 0.4);
+      };
+      const L = S.L[0], R = S.R[0], C = S.T[0] || S.B[0];
+      let a, b, mid;
+      if (!C) {
+        if (nm === 'I') { a = b = mk('P', '', 0); }
+        else if (nm === 'X' || nm === 'Z') { a = b = mk(nm, '\\pi', 0); }
+        else { a = mk('Z', '\\pi', -0.25); b = mk('X', '\\pi', 0.25); wire(a, b); scal('i'); scal('i'); scal('rt'); scal('rt'); }   // Y = i·X·Z
+      } else {
+        if (nm === 'I') { a = b = mk('P', '', 0); mid = mk('X', '', 0, C.end && S.T[0] ? -0.3 : 0.3); scal('rt'); }
+        else if (nm === 'Z') { a = b = mid = mk('Z', '', 0); }
+        else if (nm === 'X') { mid = mk('Z', '', 0); a = mk('H', '', -0.25); b = mk('H', '', 0.25); wire(a, mid); wire(mid, b); }
+        else { mid = mk('Z', '', 0); a = mk('X', '\\frac{\\pi}{2}', -0.25); b = mk('X', '-\\frac{\\pi}{2}', 0.25); wire(a, mid); wire(mid, b); }
+        relink(C, mid);
+      }
+      relink(L, a); relink(R, b);
+      c.nodes.splice(c.nodes.indexOf(n), 1);
+    });
+    return c;
+  }
   // Text cells (⋮, labels) are ignored in computation, with any wires touching them.
   // Matrix arrows are computed as their Z/X normal form.
   function noText(d) {
-    d = ZX.expandMats(d);
+    d = expandBoxes(ZX.expandMats(d));
     if (!d.nodes.some((n) => n.t === 'T')) return d;
     const t = new Set(d.nodes.filter((n) => n.t === 'T').map((n) => n.id));
     return Object.assign({}, d, { nodes: d.nodes.filter((n) => !t.has(n.id)), edges: d.edges.filter((e) => !t.has(e.a) && !t.has(e.b)) });
@@ -461,6 +582,164 @@
     return { legs: order, data, e: T.e };
   }
 
+  // ---------- scalars written next to a relation ----------
+  // "\stackrel{(eu)}{=}\frac{1}{\sqrt{2}}": the text after the relation multiplies the right diagram, text before it the left one.
+  // parseScalar(tex) → null (nothing written) or { syms, f(env) → [re, im] }, env(name) = the symbol's value as a plain number.
+  const C = {
+    add: (x, y) => [x[0] + y[0], x[1] + y[1]], sub: (x, y) => [x[0] - y[0], x[1] - y[1]], mul: Nm.mul,
+    div: (x, y) => { const d = y[0] * y[0] + y[1] * y[1]; if (d < 1e-300) throw new Error('division by zero in a scalar'); return [(x[0] * y[0] + x[1] * y[1]) / d, (x[1] * y[0] - x[0] * y[1]) / d]; },
+    exp: (x) => { const r = Math.exp(x[0]); return [r * Math.cos(x[1]), r * Math.sin(x[1])]; },
+    log: (x) => [Math.log(Math.hypot(x[0], x[1])), Math.atan2(x[1], x[0])],
+  };
+  C.pow = (x, y) => {
+    if (!y[1] && Number.isInteger(y[0]) && Math.abs(y[0]) <= 64) { let r = [1, 0]; for (let k = 0; k < Math.abs(y[0]); k++) r = C.mul(r, x); return y[0] < 0 ? C.div([1, 0], r) : r; }
+    if (!x[0] && !x[1]) return [0, 0];
+    return C.exp(C.mul(y, C.log(x)));
+  };
+  C.cos = (x) => C.mul(C.add(C.exp([-x[1], x[0]]), C.exp([x[1], -x[0]])), [0.5, 0]);
+  C.sin = (x) => C.div(C.sub(C.exp([-x[1], x[0]]), C.exp([x[1], -x[0]])), [0, 2]);
+  function parseScalar(src) {
+    let s = String(src || '');
+    if (ZX && ZX.unicodeToTex) s = ZX.unicodeToTex(s);
+    s = s.replace(/√/g, '\\sqrt ').replace(/(^|[^\\A-Za-z])pi(?![A-Za-z])/g, '$1\\pi ')
+      .replace(/\\(left|right|big|Big|bigg|Bigg)\b/g, ' ').replace(/\\(,|;|!|:|quad|qquad)/g, ' ')
+      .replace(/\\cdot|\\times|\\ast/g, '*').replace(/\\lbrack/g, '[').replace(/\\rbrack/g, ']').trim()
+      .replace(/^\*+|\*+$/g, '').trim();
+    if (!s) return null;
+    if (s === '-') return { syms: [], f: () => [-1, 0] };
+    if (s === '+') return null;
+    let i = 0;
+    const syms = new Set();
+    const peek = () => { while (s[i] === ' ' || s[i] === '\t' || s[i] === '\n') i++; return s[i]; };
+    const fail = (m) => { throw new Error(`Can't read the scalar “${src}”${m ? ': ' + m : ''}`); };
+    const K = (z) => () => z;
+    const close = (j, o, c) => { let depth = 0; for (; j < s.length; j++) { if (s[j] === o) depth++; else if (s[j] === c && --depth === 0) return j; } return fail(`missing ${c}`); };
+    function sub(t) { const save = [s, i]; s = t; i = 0; const v = expr(); if (peek() !== undefined) fail(`unexpected “${s.slice(i)}”`); [s, i] = save; return v; }
+    function arg() {
+      const c = peek();
+      if (c === undefined) fail('missing argument');
+      if (c === '{') { const j = close(i, '{', '}'); const t = s.slice(i + 1, j); i = j + 1; return sub(t); }
+      if (c === '\\') { const m = /^\\([A-Za-z]+)/.exec(s.slice(i)); if (!m) fail(); i += m[0].length; return command(m[1]); }
+      i++; return sub(c);
+    }
+    function expr() {
+      let v = term();
+      for (;;) {
+        const c = peek();
+        if (c === '+') { i++; const a = v, b = term(); v = (e) => C.add(a(e), b(e)); }
+        else if (c === '-') { i++; const a = v, b = term(); v = (e) => C.sub(a(e), b(e)); }
+        else return v;
+      }
+    }
+    function term() {
+      let v = null;
+      for (;;) {
+        const c = peek();
+        if (c === undefined || c === '+' || (c === '-' && v) || c === ')' || c === ']' || c === '}') break;
+        if (c === '-') { i++; const b = power(); v = (e) => C.mul([-1, 0], b(e)); continue; }
+        if (c === '*') { if (!v) fail(); i++; continue; }
+        if (c === '/') { if (!v) fail(); i++; const a = v, b = power(); v = (e) => C.div(a(e), b(e)); continue; }
+        const f = power();
+        if (!v) v = f; else { const a = v; v = (e) => C.mul(a(e), f(e)); }
+      }
+      if (!v) fail();
+      return v;
+    }
+    function power() {
+      let v = factor();
+      while (peek() === '^') { i++; const a = v, b = arg(); v = (e) => C.pow(a(e), b(e)); }
+      return v;
+    }
+    function factor() {
+      const c = peek();
+      if (c === '(' || c === '[') { const j = close(i, c, c === '(' ? ')' : ']'); const t = s.slice(i + 1, j); i = j + 1; return sub(t); }
+      if (c === '{') return arg();
+      if (/[0-9.]/.test(c)) { const m = /^[0-9]*\.?[0-9]+/.exec(s.slice(i)); if (!m) fail(); i += m[0].length; return K([+m[0], 0]); }
+      if (c === '\\') { const m = /^\\([A-Za-z]+)/.exec(s.slice(i)); if (!m) fail(`unexpected “${s.slice(i, i + 2)}”`); i += m[0].length; return command(m[1]); }
+      if (/[A-Za-z]/.test(c)) { i++; return letter(c); }
+      return fail(`unexpected “${c}”`);
+    }
+    function letter(c) {
+      if (c === 'i' && s[i] !== '_') return K([0, 1]);
+      if (c === 'e' && s[i] !== '_') return K([Math.E, 0]);
+      return symbol(c);
+    }
+    function command(name) {
+      if (name === 'pi') return K([Math.PI, 0]);
+      if (name === 'omega') return K([Math.SQRT1_2, Math.SQRT1_2]);   // ω = e^{iπ/4}, as usual in ZX
+      if (name === 'frac' || name === 'dfrac' || name === 'tfrac' || name === 'cfrac') { const a = arg(), b = arg(); return (e) => C.div(a(e), b(e)); }
+      if (name === 'sqrt') {
+        let n = K([2, 0]);
+        if (peek() === '[') { const j = close(i, '[', ']'); n = sub(s.slice(i + 1, j)); i = j + 1; }
+        const a = arg(); return (e) => C.pow(a(e), C.div([1, 0], n(e)));
+      }
+      if (name === 'exp') { const a = arg(); return (e) => C.exp(a(e)); }
+      if (name === 'cos') { const a = arg(); return (e) => C.cos(a(e)); }
+      if (name === 'sin') { const a = arg(); return (e) => C.sin(a(e)); }
+      if (/^(mathrm|text|textrm|mathit|operatorname)$/.test(name)) {
+        const save = i, c = peek();
+        if (c === '{') { const j = close(i, '{', '}'); const t = s.slice(i + 1, j).trim(); if (t === 'e' || t === 'i') { i = j + 1; return letter(t); } }
+        i = save; return arg();
+      }
+      if (name === 'mathbf' || name === 'boldsymbol') return arg();
+      if (name === 'neg' || name === 'oplus' || name === 'pm' || name === 'mp') fail(`\\${name} is not supported in a scalar`);
+      return symbol('\\' + name);
+    }
+    function symbol(name) {
+      if (s[i] === '_') { i++; if (s[i] === '{') { const j = close(i, '{', '}'); name += '_{' + s.slice(i + 1, j).replace(/\s+/g, '') + '}'; i = j + 1; } else if (s[i] === '\\') { const m = /^\\[A-Za-z]+/.exec(s.slice(i)); name += '_{' + m[0] + '}'; i += m[0].length; } else { name += '_' + s[i]; i++; } }
+      syms.add(name);
+      return (e) => [e(name), 0];
+    }
+    const v = expr();
+    if (peek() !== undefined) fail(`unexpected “${s.slice(i)}”`);
+    return { syms: [...syms], f: v };
+  }
+  // The scalars on the two sides of a relation in a chain  D1 = s1·D2 = s2·D3 …:
+  // each term is its diagram times the scalar written just before it, so relation i compares
+  // (scalar after relation i−1) · (scalar before relation i) · D_i  with  (scalar after relation i) · D_{i+1}.
+  // prevSep = the relation before diagram i (none for the first diagram). null = no scalars at all.
+  function sepScalars(sep, prevSep) {
+    if (!ZX.sepSplit) return null;
+    const p = ZX.sepSplit(sep || ''), q = prevSep ? ZX.sepSplit(prevSep) : null;
+    const times = (a, b) => (!a ? b : !b ? a : { syms: [...new Set(a.syms.concat(b.syms))], f: (e) => C.mul(a.f(e), b.f(e)) });
+    const l = times(q ? parseScalar(q.post) : null, parseScalar(p.pre)), r = parseScalar(p.post);
+    return l || r ? { l, r } : null;
+  }
+  // a complex number as short LaTeX and plain text: 1/√2, −i, √2·e^{iπ/4} …
+  function scalarForm(z) {
+    const mag = Math.hypot(z[0], z[1]), ang = Math.atan2(z[1], z[0]) / Math.PI;   // angle in units of π, (−1, 1]
+    const near = (x, y) => Math.abs(x - y) < 1e-9 * Math.max(1, Math.abs(y));
+    // magnitude: n/d or n/d·√2 (n, d small), else √(n/d), else decimal
+    let mt = null, mx = null;
+    const rat = (x) => { for (let d = 1; d <= 64; d++) { const n = Math.round(x * d); if (n > 0 && n <= 4096 && near(x * d, n)) return [n, d]; } return null; };
+    const fr = (n, d, top) => (d === 1 ? top : `\\frac{${top}}{${d}}`);
+    let q = rat(mag);
+    if (q) { mt = fr(q[0], q[1], String(q[0])); mx = q[1] === 1 ? String(q[0]) : `${q[0]}/${q[1]}`; }
+    else if ((q = rat(mag / Math.SQRT2))) {
+      const [n, d] = q;
+      if (n === 1 && d === 2) { mt = '\\frac{1}{\\sqrt{2}}'; mx = '1/√2'; }
+      else if (d % 2 === 0 && n === 1) { mt = `\\frac{1}{${d / 2}\\sqrt{2}}`; mx = `1/(${d / 2}√2)`; }
+      else { const top = (n === 1 ? '' : n) + '\\sqrt{2}'; mt = fr(n, d, top); mx = (n === 1 ? '' : n) + '√2' + (d === 1 ? '' : '/' + d); }
+    } else if ((q = rat(mag * mag))) { mt = `\\sqrt{${fr(q[0], q[1], String(q[0]))}}`; mx = `√(${q[1] === 1 ? q[0] : q[0] + '/' + q[1]})`; }
+    else { mt = mx = String(+mag.toPrecision(6)); }
+    // phase: a fraction of π with a small denominator
+    let pt = null, px = null, a = null;
+    for (let d = 1; d <= 24 && !a; d++) { const n = Math.round(ang * d); if (near(ang * d, n)) a = [n, d]; }
+    if (!a) { const t = +ang.toFixed(6); pt = `e^{${t}i\\pi}`; px = `e^(${t}iπ)`; }
+    else {
+      let [n, d] = a; const g = gcd(n, d); n /= g; d /= g;
+      const T = { '0/1': ['', ''], '1/1': ['-', '-'], '-1/1': ['-', '-'], '1/2': ['i', 'i'], '-1/2': ['-i', '-i'] }[`${n}/${d}`];
+      if (T) { pt = T[0]; px = T[1]; }
+      else { const num = Math.abs(n) === 1 ? '' : Math.abs(n); pt = `e^{${n < 0 ? '-' : ''}${num}i\\pi/${d}}`; px = `e^(${n < 0 ? '-' : ''}${num}iπ/${d})`; }
+    }
+    if (mag < 1e-12) return { tex: '0', text: '0' };
+    const one = mt === '1';
+    if (pt === '' ) return { tex: mt, text: mx };
+    if (pt === '-') return { tex: '-' + mt, text: '−' + mx };
+    if (pt === 'i' || pt === '-i') return { tex: (pt === '-i' ? '-' : '') + (one ? 'i' : mt + 'i'), text: (pt === '-i' ? '−' : '') + (one ? 'i' : mx + 'i') };
+    return { tex: one ? pt : `${mt}\\,${pt}`, text: one ? px : `${mx}·${px}` };
+  }
+
   // ---------- comparing two meanings ----------
   const toNum = (m) => m.data.map((x) => {
     const f = Math.pow(2, -m.e / 2);
@@ -490,7 +769,9 @@
       for (let k = B.e; k < m; k++) b = R.mul(b, R.sqrt2);
       return { rel: R.eq(a, b) ? 'eq' : 'prop' };
     }
-    const a = toNum(A), b = toNum(B);
+    return relateNum(toNum(A), toNum(B), A);
+  }
+  function relateNum(a, b, A) {
     const nrm = (v) => Math.max(...v.map((x) => Math.hypot(x[0], x[1])));
     const na = nrm(a), nb = nrm(b), tol = 1e-9;
     if (na < tol || nb < tol) return { rel: na < tol && nb < tol ? 'eq' : 'ne' };
@@ -502,6 +783,12 @@
     const ratio = Math.hypot(b[j][0] - a[j][0], b[j][1] - a[j][1]) / Math.hypot(...a[j]);
     return { rel: ratio < 1e-9 ? 'eq' : 'prop' };
   }
+  // c with a = c·b (numbers; a and b already known to be proportional and non-zero)
+  function factorOf(a, b) {
+    let j = 0; for (let k = 1; k < a.length; k++) if (Math.hypot(...a[k]) > Math.hypot(...a[j])) j = k;
+    return C.div(a[j], b[j]);
+  }
+  const scale = (v, z) => v.map((x) => Nm.mul(x, z));
   // Compare two diagrams for every value of their symbols: 0/1 symbols (aπ) are tried in every
   // combination, exactly when possible; angle symbols (α) get several random values.
   // fixed pseudo-random trial values (same for every step of one simplification, so results can be reused)
@@ -526,12 +813,20 @@
     if (!m.has(key)) m.set(key, evaluate(d, opt));
     return m.get(key);
   }
-  function compare(d1, d2, cache) {
+  // sc (optional) = sepScalars(…): the left diagram is multiplied by sc.l, the right one by sc.r.
+  // When the two sides are proportional, `factor` is what the right-hand scalar must be for '=' to hold
+  // (null if it depends on the symbols: then `factorVaries`).
+  // fixed (optional): symbol values to hold fixed; every other symbol is still checked for all values
+  function compare(d1, d2, cache, sc, fixed) {
     const s1 = symInfo(d1), s2 = symInfo(d2);
-    const syms = [...new Set(s1.symbols.concat(s2.symbols))];
+    const pin = {};
+    if (fixed) Object.keys(fixed).forEach((k) => { if (isFinite(fixed[k])) pin[k] = +fixed[k]; });
+    const dsyms = [...new Set(s1.symbols.concat(s2.symbols))].filter((k) => !(k in pin));
     const b1 = new Set(s1.bools), b2 = new Set(s2.bools);
-    const bools = syms.filter((k) => (b1.has(k) || !s1.symbols.includes(k)) && (b2.has(k) || !s2.symbols.includes(k)));
+    const bools = dsyms.filter((k) => (b1.has(k) || !s1.symbols.includes(k)) && (b2.has(k) || !s2.symbols.includes(k)));
+    const syms = [...new Set(dsyms.concat(sc ? [].concat(sc.l ? sc.l.syms : [], sc.r ? sc.r.syms : []) : []))].filter((k) => !(k in pin));
     const reals = syms.filter((k) => !bools.includes(k));
+    const fac = factorTrack();
     if (bools.length > 8) throw new Error('Too many 0/1 symbols to check every case');
     const combos = [];
     for (let m = 0; m < (1 << bools.length); m++) combos.push(Object.fromEntries(bools.map((k, j) => [k, (m >> j) & 1])));
@@ -540,27 +835,60 @@
     for (let t = 0; t < trials; t++) {
       const rv = Object.fromEntries(reals.map((k) => [k, cache ? trialValue(k, t) : Math.random() * 4 - 2]));
       for (const c of combos) {
-        const values = Object.assign({}, rv, c);
+        const values = Object.assign({}, rv, c, pin);
         let A, B;
         try { const m = lcm(needM(d1, values), needM(d2, values)); A = evalCached(d1, { values, m }, cache); B = evalCached(d2, { values, m }, cache); } catch (e) { A = null; }
         if (!A || A.exact !== B.exact || (A.exact && A.R !== B.R)) { A = evalCached(d1, { exact: false, values }, cache); B = evalCached(d2, { exact: false, values }, cache); }
         if (!A.exact) exact = false;
-        const r = relate(A, B);
+        const r = relateWith(A, B, sc, values, bools, fac);
         if (r.rel === 'ne') return Object.assign(r, { exact: A.exact, symbols: syms, bools, at: values });
         if (r.rel === 'prop') worst = 'prop';
       }
     }
-    return { rel: worst, exact, symbols: syms, bools };
+    return Object.assign({ rel: worst, exact, symbols: syms, bools }, fac.result());
+  }
+  // relate A and B with the written scalars applied, and note the factor that would make them equal
+  function relateWith(A, B, sc, values, bools, fac) {
+    let r;
+    if (!sc) r = relate(A, B);
+    else {
+      const env = (k) => { const v = values && k in values ? values[k] : 0; return bools && bools.includes(k) ? v : v * Math.PI; };   // angles are in units of π
+      const L = sc.l ? sc.l.f(env) : [1, 0], R = sc.r ? sc.r.f(env) : [1, 0];
+      if (!isFinite(L[0] + L[1] + R[0] + R[1])) throw new Error('A scalar next to the relation has no value here');
+      r = relateNum(scale(toNum(A), L), scale(toNum(B), R), A);
+      r.L = L;
+    }
+    if (r.rel !== 'ne' && fac) fac.add(A, B, r.L || [1, 0]);
+    delete r.L;
+    return r;
+  }
+  function factorTrack() {
+    let first = null, varies = false, zero = false;
+    return {
+      add(A, B, L) {
+        const a = toNum(A), b = toNum(B);
+        if (a.every((x) => Math.hypot(...x) < 1e-12) || b.every((x) => Math.hypot(...x) < 1e-12)) { zero = true; return; }
+        const need = C.mul(L, factorOf(a, b));   // the right-hand scalar that makes l·A = need·B
+        if (!first) first = need;
+        else if (Math.hypot(need[0] - first[0], need[1] - first[1]) > 1e-7 * Math.max(1, Math.hypot(...first))) varies = true;
+      },
+      result() {
+        if (zero || !first) return {};
+        if (varies) return { factorVaries: true };
+        const f = scalarForm(first);
+        return { factor: first, factorTex: f.tex, factorText: f.text };
+      },
+    };
   }
 
   // Compare at one fixed choice of symbol values (exact when the values allow it).
-  function compareAt(d1, d2, values) {
-    let A, B;
-    try { const m = lcm(needM(d1, values), needM(d2, values)); A = evaluate(d1, { values, m }); B = evaluate(d2, { values, m }); } catch (e) { A = null; }
-    if (!A || A.exact !== B.exact || (A.exact && A.R !== B.R)) { A = evaluate(d1, { exact: false, values }); B = evaluate(d2, { exact: false, values }); }
-    const syms = [...new Set(symInfo(d1).symbols.concat(symInfo(d2).symbols))];
-    return Object.assign(relate(A, B), { exact: A.exact, symbols: syms, at: values });
+  // compare at the chosen values; a symbol with no chosen value is checked for every value (never silently 0)
+  function compareAt(d1, d2, values, sc) {
+    const r = compare(d1, d2, null, sc, values || {});
+    if (r.rel === 'ne' && r.at) r.at = Object.assign({}, values, r.at);
+    return r;
   }
+
 
   // ---------- presenting a matrix ----------
   // exact entry a + bω + cω² + dω³ → LaTeX
@@ -1207,9 +1535,9 @@
       const s = doc.seps[i] == null ? '=' : doc.seps[i];
       const claim = /\\propto|∝/.test(s) ? 'prop' : /\\approx|≈|Rightarrow|⇒/.test(s) ? 'other' : s.trim() ? 'eq' : 'none';
       try {
-        const r = compare(doc.diagrams[i], doc.diagrams[i + 1]);
+        const r = compare(doc.diagrams[i], doc.diagrams[i + 1], null, sepScalars(s, i > 0 ? (doc.seps[i - 1] == null ? '=' : doc.seps[i - 1]) : ''));
         const ok = claim === 'other' || claim === 'none' ? null : claim === 'eq' ? r.rel === 'eq' : r.rel !== 'ne';
-        out.push({ i, claim, rel: r.rel, ok, exact: r.exact, symbols: r.symbols });
+        out.push({ i, claim, rel: r.rel, ok, exact: r.exact, symbols: r.symbols, factor: r.factorTex, factorVaries: r.factorVaries });
       } catch (e) { out.push({ i, claim, error: e.message }); }
     }
     return out;
@@ -1234,9 +1562,10 @@
     return { ins: M.ins, outs: M.outs, exact, Mexact: !!M.exact, bigFallback: !!M.bigFallback, rows, pref };
   }
   function relationCheck(d1, d2, o = {}) {
+    const sc = sepScalars(o.sep, o.prevSep);
     const syms = [...new Set(symInfo(d1).symbols.concat(symInfo(d2).symbols))];
-    const r = syms.length && o.check === 'current' ? compareAt(d1, d2, o.values || {}) : compare(d1, d2);
-    return { syms, r: { rel: r.rel, exact: r.exact, why: r.why, at: r.at } };
+    const r = syms.length && o.check === 'current' ? compareAt(d1, d2, o.values || {}, sc) : compare(d1, d2, null, sc);
+    return { syms, r: { rel: r.rel, exact: r.exact, why: r.why, at: r.at, factorTex: r.factorTex, factorText: r.factorText, factorVaries: r.factorVaries, scaled: !!sc } };
   }
   function symbolsOf(ds) {
     const reals = new Set(), bools = new Set();
@@ -1244,7 +1573,7 @@
     bools.forEach((k) => reals.delete(k));
     return { reals: [...reals], bools: [...bools] };
   }
-  const ZXS = { matrixView, relationCheck, symbolsOf, io, parsePhase, phaseTex, evaluate, compare, compareAt, symInfo, relate, exactForm, numForm, simplify, checkChain, analyse };
+  const ZXS = { parseScalar, sepScalars, scalarForm, matrixView, relationCheck, symbolsOf, io, parsePhase, phaseTex, evaluate, compare, compareAt, symInfo, relate, exactForm, numForm, simplify, checkChain, analyse };
   if (typeof module !== 'undefined' && module.exports) module.exports.ZXS = ZXS;
   if (typeof window !== 'undefined') window.ZXS = ZXS;
   else if (typeof self !== 'undefined') self.ZXS = ZXS;   // Web Worker

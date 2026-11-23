@@ -14,12 +14,14 @@
 %   \zxZ-{\alpha}  \zxFracZ-{\pi}{4}   negative phase
 %   \zxH{}                       Hadamard box
 %   \zxN{}                       empty point: a wire starts / ends / passes here
+%   \zxBlock{W}{H}{$U$}          box drawn W x H cells, label is text (math in $...$) (spans rows/columns; wires: \ar[r, zxFrom={x}{y}])
 %   \zxMat[1 0 1; 1 1 0]{n}{A}{m}   matrix arrow (bold wire with a chevron; [..] = entries, optional)
 %   \zxMat<[..]{n}{A}{m}            the same, pointing left;  \ar[r, zxBundle] = bold wire arrow → arrow
 %   circuits:  \zxGate{H}   \zxCtrl{} (control dot)   \zxNot{} (target (+))   \zxCross{} (swap)
 %
 % 2) Wires (put them after the node they start from)
 %   \rar \lar \dar \uar          straight, one step right / left / down / up
+%   \ar[r,zxHE]                  Hadamard edge (blue dashed)
 %   \ar[rr]  \ar[dr]  \ar[ur]    any direction, repeat a letter to go further
 %   \ar[r,o']  \ar[r,o.]         arc above / below (two parallel edges between spiders)
 %   \ar[ru,<']  \ar[rd,<.]       leave a spider going up / down, arrive flat (fan out)
@@ -50,6 +52,11 @@
 \RequirePackage{tikz}
 \RequirePackage{zx-calculus}
 
+% ---- tikz externalize: cached pictures are named <prefix>zx<rev>N. Bump the revision whenever the
+% look below changes, so documents that cache their diagrams redraw them instead of reusing old ones.
+\def\zxdiagramRev{r8}
+\zxExternalSuffix{zx\zxdiagramRev}
+
 % ---- Picturing Quantum Software colours
 \definecolor{colorZxZ}{RGB}{216,248,216}
 \definecolor{colorZxX}{RGB}{232,165,165}
@@ -69,10 +76,11 @@
 \renewcommand{\zxDefaultLineWidth}{0.5pt}
 \def\zxSpiderSize{2.6mm}   % empty Z / X spider in a plain \zx{...}
 \def\zxPointPad{1.3mm}     % half the invisible height of a \zxN{} point (see below)
+\def\zxdiagram@small{\ifdefined\zxdiagram@half\else\def\zxSpiderSize{2mm}\def\zxPointPad{0mm}\fi}
 \tikzset{
   /zx/defaultEnv/.append style={
-    /tikz/row sep/.append code={\def\zxSpiderSize{2mm}\def\zxPointPad{0mm}},
-    /tikz/column sep/.append code={\def\zxSpiderSize{2mm}\def\zxPointPad{0mm}}},
+    /tikz/row sep/.append code={\zxdiagram@small},
+    /tikz/column sep/.append code={\zxdiagram@small}},
   /zx/user overlay nodes/.append style={
     zxNoPhase/.append style={minimum size=\zxSpiderSize}},
 % \zxN{} is a bare point with no height, so a row made only of \zxN (a swap, a bare
@@ -92,9 +100,12 @@
 \RenewDocumentCommand \zxNoExt { O{} +m }
   {
     \bool_set_false:N \l_tmpa_bool
-    \clist_map_inline:nn { \zxZ, \zxX, \zxH, \zxFracZ, \zxFracX, \zxGate, \zxCtrl, \zxNot, \zxCross, \zxBox, \zxEmptyDiagram, \zxMat }
+    \clist_map_inline:nn { \zxZ, \zxX, \zxH, \zxFracZ, \zxFracX, \zxGate, \zxCtrl, \zxNot, \zxCross, \zxBox, \zxBlock, \zxEmptyDiagram, \zxMat }
       { \tl_if_in:nnT {#2} {##1} { \bool_set_true:N \l_tmpa_bool \clist_map_break: } }
     \group_begin:
+    % ZX Draw writes colours as rgb,255:red,R;green,G;blue,B, a mix of the colours named red / green / blue:
+    % inside a diagram they are the pure ones, whatever the document class made of them
+    \definecolor{red}{rgb}{1,0,0}\definecolor{green}{rgb}{0,1,0}\definecolor{blue}{rgb}{0,0,1}
     \bool_if:NF \l_tmpa_bool { \cs_set:Npn \zxDefaultColumnSep { \zxWireColumnSep } }
     \zxdiagram@NoExt [#1] {#2}
     \group_end:
@@ -124,10 +135,84 @@
 \NewExpandableDocumentCommand{\zxMat}{t< O{} m m m}{%
   \node[zxMatArrow]{\zxMatPic{\IfBooleanTF{#1}{-1}{1}}{#3}{#4}{#5}};}
 
+% ---- boxes (written by ZX Draw)
+% \zxBlock[opts]{W}{H}{label}: a box drawn W x H cells around its own cell, over the neighbouring cells
+% (it takes no room in the grid). opts: fill=..., zxAt={dx}{dy} (centre shifted, in cells: a box that reaches
+% further on one side), zxEnds / zxMid (port layout, ZX Draw only).
+% A wire meets it at a port: \ar[r, zxFrom={x}{y}] leaves box at (x, y) cells from its centre,
+% zxTo={x}{y} arrives at one. \zxBlock[..]<x1/y1/x2/y2, ...>{W}{H}{U}: the box also
+% draws a short straight leg per wire (cells from its cell, y up); the wire starts at the leg's end. \zxCellW / \zxCellH = one cell in a plain \zx{...}.
+\def\zxCellW{5.8mm}
+\def\zxCellH{5.4mm}
+\definecolor{colorZxBox}{RGB}{233,236,241}
+\tikzset{zxBlockNode/.style={zx main node, draw=none, fill=none, inner sep=0pt, outer sep=0pt, minimum size=0pt},
+  zxFill/.style={minimum width=2.6mm},   % \zxN[zxFill]{}: keeps an empty cell under a box one cell wide
+  zxEnds/.style={}, zxMid/.style={}, zxAt/.code 2 args={\pgfkeysalso{/tikz/shift={(#1,#2)}}\gdef\zxBlock@ax{#1}\gdef\zxBlock@ay{#2}},
+  zxVert/.code={\def\zxBlock@rot{90}},   % zxVert: label written up the box
+  zxFrom/.style 2 args={/tikz/commutative diagrams/start anchor={[xshift=#1*\zxCellW, yshift=#2*\zxCellH]center}},
+  zxTo/.style 2 args={/tikz/commutative diagrams/end anchor={[xshift=#1*\zxCellW, yshift=#2*\zxCellH]center}}}
+\NewDocumentCommand{\zxBlockPic}{m m m m m}{\gdef\zxBlock@ax{0}\gdef\zxBlock@ay{0}\tikz[baseline={(0,0)}, x=\zxCellW, y=\zxCellH]{%
+    \IfValueT{#5}{\foreach \zx@a/\zx@b/\zx@c/\zx@d in {#5} {\draw[overlay, line width=\zxDefaultLineWidth] (\zx@a,\zx@b) -- (\zx@c,\zx@d);}}%
+    \path[overlay, draw, fill=colorZxBox, line width=\zxDefaultLineWidth, #1] (-#2/2,-#3/2) rectangle (#2/2,#3/2);
+    \def\zxBlock@rot{0}\node[overlay, inner sep=0pt, font=\fontsize{7}{8.5}\selectfont, #1, draw=none, rotate=\zxBlock@rot] at (0,0) {#4};% label: text (math inside $...$) at the size of a phase
+    % with zxGrid the box counts towards the diagram's size (so tikzexternalize does not crop it), mirrored about
+    % its own cell so the node's centre stays where the wires expect it; rows are not moved (between origins)
+    \ifdefined\zxdiagram@grid\path ({-abs(\zxBlock@ax)-#2/2-.25},{-abs(\zxBlock@ay)-#3/2-.25}) ({abs(\zxBlock@ax)+#2/2+.25},{abs(\zxBlock@ay)+#3/2+.25});\fi}}
+\NewExpandableDocumentCommand{\zxBlock}{O{} d<> m m m}{%
+  \node[zxBlockNode]{\zxBlockPic{#1}{#3}{#4}{#5}{#2}};\ifdefined\zxdiagram@grid\ar[zxBBox={#3}{#4}{#1}]\fi}
+% zxBBox: an invisible path over the box node, drawn in the diagram's own picture. A matrix sizes itself from
+% its rows, so a box reaching past its row would be left out (and cropped by tikzexternalize) without it.
+% zxBBox={W}{H}{box options}: reads zxAt from the box's options, ignores the rest.
+\pgfkeys{/zxbb/.is family, /zxbb/.unknown/.code={}, /zxbb/zxAt/.code 2 args={\def\zxBlock@bx{#1}\def\zxBlock@by{#2}}}
+\tikzset{zxBBox/.code n args={3}{\def\zxBlock@bx{0}\def\zxBlock@by{0}\pgfkeys{/zxbb/.cd, #3}%
+  \pgfkeysalso{/tikz/draw=none, /tikz/to path={([xshift=(\zxBlock@bx-#1/2-.05)*\zxCellW, yshift=(\zxBlock@by-#2/2-.05)*\zxCellH]\tikztostart.center)
+    rectangle ([xshift=(\zxBlock@bx+#1/2+.05)*\zxCellW, yshift=(\zxBlock@by+#2/2+.05)*\zxCellH]\tikztostart.center)}}}}
+
 % ---- half cells
 % ZX Draw writes \zx[zxHalf]{...} when a node sits half way between two cells: the grid is
 % twice as fine, so the spacing is halved; spiders keep the size of a plain \zx{...}.
+% zxHalf wins over circuit / row sep / column sep wherever they stand in the option list,
+% so \zx[zxHalf, circuit]{...} looks exactly like ZX Draw's image export.
 \tikzset{zxHalf/.style={/tikz/commutative diagrams/row sep=1.4mm, /tikz/commutative diagrams/column sep=1.6mm,
-  /utils/exec={\def\zxSpiderSize{2.6mm}\def\zxPointPad{1.3mm}}}}
+  /utils/exec={\def\zxSpiderSize{2.6mm}\def\zxPointPad{1.3mm}\def\zxdiagram@half{}%
+    \def\zxDefaultColumnSepCircuit{1.6mm}\def\zxDefaultRowSepCircuit{1.4mm}\def\zxCellW{2.9mm}\def\zxCellH{2.7mm}}}}
+% \zx[zxGrid]{...} (ZX Draw writes it, last, for any diagram with a box): every row and column is exactly
+% one cell (\zxCellW x \zxCellH) apart, centre to centre, whatever it holds, so boxes and their wires
+% sit on the same grid as the spiders, as on ZX Draw's canvas. Spiders keep the plain size.
+% The rows cannot grow there, so spiders, phases and text cells are drawn at the canvas's proportions
+% (\zxGridFont for phases and text, rounder phase spiders) instead of pushing into their neighbours.
+\def\zxGridFont{\fontsize{6}{7.5}\selectfont}
+\tikzset{zxGrid/.style={/tikz/row sep={\zxCellH,between origins}, /tikz/column sep={\zxCellW,between origins},
+  /utils/exec={\def\zxSpiderSize{2mm}\def\zxPointPad{1.3mm}\def\zxdiagram@grid{}},
+  /tikz/cells={/tikz/nodes={/tikz/font=\zxGridFont}},
+  /zx/user overlay nodes/.append style={
+    zxShort/.append style={minimum size=3.4mm, font={\fontsize{7.5}{9}\selectfont\unboldmath}},   % scaled by .8 like every phase: 6pt, as \zxGridFont
+    zxLong/.append style={inner xsep=.15mm}}}}
+
+% |[zxTL]| \frac{1}{\sqrt2}: a text cell right next to a spider on its right (half a cell away, zxGrid) leans
+% left so it does not run into it: its right edge sits .5mm right of its cell centre. zxTR: the mirror image.
+% zxTU / zxTD: the same above / below a spider (bottom / top edge .4mm past its cell centre).
+\tikzset{zxTL/.style={anchor=east, inner xsep=0pt, xshift=.5mm}, zxTR/.style={anchor=west, inner xsep=0pt, xshift=-.5mm},
+  zxTU/.style={anchor=south, inner ysep=0pt, yshift=-.4mm}, zxTD/.style={anchor=north, inner ysep=0pt, yshift=.4mm}}
+
+% \zxScalar{\sqrt{2}^{n-1}}: ZX Draw writes the scalars next to a relation (= \zxScalar{..} \zx{..}) smaller
+% than the relation, in script size. Redefine it to taste, e.g. \renewcommand{\zxScalar}[1]{#1}.
+\providecommand{\zxScalar}[1]{{\scriptstyle #1}}
+
+% ---- Hadamard edge and export looks (written by ZX Draw)
+% \ar[r, zxHE]       Hadamard edge: blue dashed wire (same meaning as a wire with an H box on it)
+% \zxN[zxDot]{}      a visible dot (routing point)
+% \zxN[zxIn]{} \zxN[zxOut]{}   marked open ends: input / output
+\definecolor{colorZxHEdge}{RGB}{68,136,204}
+\definecolor{colorZxIn}{RGB}{91,91,214}
+\definecolor{colorZxOut}{RGB}{217,130,43}
+\tikzset{zxHE/.style={draw=colorZxHEdge, dash pattern=on 2.2pt off 1.4pt, line width=1.2pt},
+  zxDot/.style={circle, fill=black, inner sep=0pt, minimum size=1.1mm},
+  zxIn/.style={circle, draw=colorZxIn, fill=colorZxIn, fill opacity=0.13, draw opacity=1, line width=0.5pt, dash pattern=on 0.8pt off 0.6pt, inner sep=0pt, minimum size=1.4mm},
+  zxOut/.style={circle, draw=colorZxOut, fill=colorZxOut, fill opacity=0.13, draw opacity=1, line width=0.5pt, dash pattern=on 0.8pt off 0.6pt, inner sep=0pt, minimum size=1.4mm}}
+
+% \zx[zxBW]{...}   black and white: Z white circle, X black circle (white phase), H white box
+\tikzset{zxBW/.style={/utils/exec={\colorlet{colorZxZ}{white}\colorlet{colorZxX}{black}\colorlet{colorZxH}{white}},
+  /zx/user overlay nodes/.append style={zxShortX/.append style={text=white}, zxLongX/.append style={text=white}}}}
 
 \endinput
